@@ -6,31 +6,28 @@ A privacy-first, on-device AI financial assistant. All AI processing happens loc
 
 ---
 
-## 🌐 Live Demo
+## 🚀 Quick Start for Judges
 
-**Deployed URL:** [https://finex-ai.vercel.app](https://finex-ai.vercel.app)
+To experience the power of on-device AI, please run the project locally. This ensures the AI model runs at full performance in your browser.
 
-> ⚠️ **Important for Judges:** The AI model runs entirely in your browser. On first visit, you will need to click **"Download Model"** and wait for the model to download (~400 MB). This is a one-time download — after that it loads instantly from your browser cache. Please use **Google Chrome or Microsoft Edge** for the best experience.
-
-### Steps to Access the App:
-1. Open **Google Chrome** or **Microsoft Edge**
-2. Visit the deployed URL above
-3. Click **"Download Model"** button in the Coach tab
-4. Wait for the model to download (~2–5 minutes depending on internet speed)
-5. Once it says **"MODEL READY"** — the AI is fully functional!
-
----
-
-## 🚀 Run Locally
-
+1. **Clone the repository:**
 ```bash
-git clone https://github.com/dhruvgupta1323/zenith-ai-finance.git
-cd zenith-ai-finance
+git clone https://github.com/Gunjanahuja14/Finex-AI-Production.git
+cd Finex-AI-Production
+```
+
+2. **Install dependencies:**
+```bash
 npm install
+```
+
+3. **Start the Development Server:**
+```bash
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173) in Chrome or Edge.
+4. **Access the App:** Open [http://localhost:5173](http://localhost:5173) in **Google Chrome** or **Microsoft Edge**.
+*(Note: The first load takes 10–30 seconds to download and cache the AI models into your browser's storage.)*
 
 ---
 
@@ -158,25 +155,6 @@ Quantized models optimized for on-device inference:
 | **Total** | **~400 MB** |
 
 > Models are downloaded once and cached in the browser's Origin Private File System (OPFS). After the first download, the app works completely offline.
-
----
-
-## 🚀 Deployment
-
-### Vercel
-```bash
-npm run build
-npx vercel --prod
-```
-The included `vercel.json` sets the required Cross-Origin-Isolation headers automatically.
-
-### Netlify
-Add a `_headers` file:
-```
-/*
-  Cross-Origin-Opener-Policy: same-origin
-  Cross-Origin-Embedder-Policy: credentialless
-```
 
 ---
 
