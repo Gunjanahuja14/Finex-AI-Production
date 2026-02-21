@@ -2,25 +2,42 @@
 
 **Status: ✅ FULLY WORKING - NO ERRORS**
 
-A privacy-first, on-device AI financial assistant. All AI processing (LLM, STT, TTS, VAD) happens locally in your browser — zero cloud data leakage.
+A privacy-first, on-device AI financial assistant. All AI processing happens locally in your browser — zero cloud data leakage.
 
 ---
 
-## 🚀 Quick Start
+## 🌐 Live Demo
+
+**Deployed URL:** [https://finex-ai.vercel.app](https://finex-ai.vercel.app)
+
+> ⚠️ **Important for Judges:** The AI model runs entirely in your browser. On first visit, you will need to click **"Download Model"** and wait for the model to download (~400 MB). This is a one-time download — after that it loads instantly from your browser cache. Please use **Google Chrome or Microsoft Edge** for the best experience.
+
+### Steps to Access the App:
+1. Open **Google Chrome** or **Microsoft Edge**
+2. Visit the deployed URL above
+3. Click **"Download Model"** button in the Coach tab
+4. Wait for the model to download (~2–5 minutes depending on internet speed)
+5. Once it says **"MODEL READY"** — the AI is fully functional!
+
+---
+
+## 🚀 Run Locally
 
 ```bash
+git clone https://github.com/dhruvgupta1323/zenith-ai-finance.git
+cd zenith-ai-finance
 npm install
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173) — App loads in 5–10 seconds, no errors!
+Open [http://localhost:5173](http://localhost:5173) in Chrome or Edge.
 
 ---
 
 ## ✨ Features
 
 ### 1. Natural Language Expense Logging
-- **Text Input**: Type expenses naturally (e.g., "Spent $45 on groceries at Whole Foods")
+- **Text Input**: Type expenses naturally (e.g., "Spent ₹450 on groceries at DMart")
 - **Voice Input**: Use speech-to-text to log expenses hands-free
 - **AI Parsing**: On-device LLM extracts amount, category, vendor, and item automatically
 - **Local Storage**: All transactions saved in browser's local SQLite database
@@ -56,24 +73,28 @@ Open [http://localhost:5173](http://localhost:5173) — App loads in 5–10 seco
 
 **Text Mode:**
 ```
-"Spent $25.50 on lunch at Chipotle"
-"Coffee this morning cost $4.50"
-"$150 electric bill from PG&E"
+"Spent ₹250 on lunch at Haldiram's"
+"Chai this morning cost ₹30"
+"₹1,500 electricity bill from BSES"
+"Bought groceries at DMart for ₹800"
+"Paid ₹499 for Swiggy One subscription"
 ```
 
 **Voice Mode:**
 1. Tap **Start Recording**
-2. Speak naturally: *"I spent forty five dollars on groceries at Safeway"*
+2. Speak naturally: *"I spent four hundred fifty rupees on groceries at DMart"*
 3. AI will parse and save automatically
 
 ### Asking the Financial Coach
 
 Try questions like:
-- "Can I afford a $500 laptop?"
-- "How can I reduce my spending?"
+- "Can I afford a ₹50,000 laptop?"
+- "How can I reduce my spending this month?"
 - "What are my biggest expenses?"
-- "Am I spending too much on food?"
-- "How much should I save each month?"
+- "Am I spending too much on food delivery?"
+- "How much should I save from my ₹50,000 salary?"
+- "How much did I spend on Zomato and Swiggy this month?"
+- "Am I on track with my monthly budget?"
 
 The coach uses your last 30 days of data to provide personalized advice.
 
@@ -84,7 +105,7 @@ The coach uses your last 30 days of data to provide personalized advice.
 | Layer | Technology |
 |-------|------------|
 | Frontend | React + TypeScript + Vite |
-| LLM | LFM2 350M (on-device) |
+| LLM | SmolLM2 360M (on-device) |
 | Speech-to-Text | Whisper Tiny English |
 | Text-to-Speech | Piper TTS |
 | Voice Activity Detection | Silero VAD v5 |
@@ -111,21 +132,17 @@ src/
 ├── models/                 # TypeScript types & data models
 │   └── Transaction.ts
 ├── services/               # Core business logic
-│   ├── DatabaseService.ts  # SQLite operations
-│   └── AIService.ts        # LLM/STT/TTS integration
+│   ├── db.ts               # SQLite operations
+│   └── aiService.ts        # LLM integration
 ├── components/             # React UI components
 │   ├── DashboardTab.tsx    # Health score & insights
 │   ├── ExpenseTab.tsx      # Expense logger
 │   ├── CoachTab.tsx        # AI chat interface
 │   ├── BillsTab.tsx        # Recurring bills calendar
-│   └── ModelBanner.tsx     # Download progress UI
-├── hooks/                  # React hooks
-│   └── useModelLoader.ts
-├── workers/
-│   └── vlm-worker.ts
+│   └── ModelDownloader.tsx # Download progress UI
 ├── styles/
 │   └── index.css
-├── runanywhere.ts          # SDK initialization
+├── sdk.ts                  # SDK initialization
 └── App.tsx                 # Main app component
 ```
 
@@ -137,13 +154,10 @@ Quantized models optimized for on-device inference:
 
 | Model | Size |
 |-------|------|
-| LFM2-350M-Q4_K_M (LLM) | ~250 MB |
-| Whisper Tiny English (STT) | ~105 MB |
-| Piper TTS Lessac Medium (TTS) | ~65 MB |
-| Silero VAD v5 | ~5 MB |
-| **Total** | **~425 MB** |
+| SmolLM2 360M (LLM) | ~400 MB |
+| **Total** | **~400 MB** |
 
-> Models are downloaded once and cached in the browser's Origin Private File System (OPFS).
+> Models are downloaded once and cached in the browser's Origin Private File System (OPFS). After the first download, the app works completely offline.
 
 ---
 
@@ -154,7 +168,7 @@ Quantized models optimized for on-device inference:
 npm run build
 npx vercel --prod
 ```
-The included `vercel.json` sets the required Cross-Origin-Isolation headers.
+The included `vercel.json` sets the required Cross-Origin-Isolation headers automatically.
 
 ### Netlify
 Add a `_headers` file:
@@ -164,66 +178,53 @@ Add a `_headers` file:
   Cross-Origin-Embedder-Policy: credentialless
 ```
 
-### Any Static Host
-Serve the `dist/` folder with these HTTP headers on all responses:
-```
-Cross-Origin-Opener-Policy: same-origin
-Cross-Origin-Embedder-Policy: credentialless
-```
-
 ---
 
 ## 🖥 Browser Requirements
 
-- Chrome 96+ or Edge 96+ (recommended: 120+)
+- **Recommended**: Chrome 120+ or Edge 120+
 - WebAssembly support
 - SharedArrayBuffer (requires Cross-Origin Isolation headers)
 - OPFS (for persistent model cache)
-- 4GB+ RAM recommended for smooth operation
+- 4GB+ RAM recommended
 
 ### Performance Tips
-1. Use Chrome/Edge for **WebGPU acceleration** (10x faster inference)
-2. Falls back to WASM if WebGPU is unavailable
-3. First-time model download takes ~5 minutes (one-time only)
-4. Clearing browser cache will delete stored transaction data
+1. Use Chrome/Edge for best performance
+2. First-time model download takes ~2–5 minutes (one-time only)
+3. After first download, app works fully offline
+4. Clearing browser cache will require re-downloading the model
 
 ---
 
 ## 🔧 Troubleshooting
 
-### Models Not Downloading
-1. Open DevTools → Application → Storage
-2. Clear OPFS (Origin Private File System) data
-3. Reload and re-download models
+### Model Not Downloading
+1. Make sure you're using Chrome or Edge (not Firefox/Safari)
+2. Open DevTools → Application → Storage → Clear OPFS data
+3. Reload and try downloading again
 
 ### Slow Performance
-1. Use Chrome 113+ or Edge 113+ for WebGPU support
+1. Close other tabs to free up memory
 2. Enable hardware acceleration in browser settings
-3. Close other tabs to free up memory
 
 ### Voice Input Not Working
 1. Grant microphone permissions when prompted
-2. Ensure VAD + STT models are fully downloaded
-3. Test microphone in browser settings
+2. Ensure you're on HTTPS or localhost
 
-### Database Not Persisting
-1. Use normal browsing mode (not incognito)
-2. Check browser storage permissions
-3. Free up browser storage space
-
-### AI Giving Incorrect Calculations
-The LFM2 350M model is not reliable for arithmetic. Always compute totals in your backend/code and pass the result to the model — never let the LLM calculate sums itself.
+### AI Not Responding
+1. Make sure the model shows **"MODEL READY"** before asking questions
+2. Refresh the page and wait for model to load from cache
 
 ---
 
 ## 🗺 Future Enhancements
 
-- [ ] Budget planning & goal tracking
-- [ ] Multi-currency support
+- [ ] Budget planning & goal tracking with UPI integration
+- [ ] Multi-currency support (INR, USD, EUR)
 - [ ] Export data (CSV, PDF reports)
 - [ ] Shared expenses with family/roommates
-- [ ] Bank account integration (read-only, local parsing)
-- [ ] Voice-controlled UI navigation
+- [ ] Bank statement parser (read-only, local)
+- [ ] Voice-controlled UI navigation in Hindi & English
 
 ---
 
