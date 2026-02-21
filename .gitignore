@@ -4,4 +4,4 @@ dist/
 *.local
 *.tsbuildinfo
 .playwright-mcp/
-*.png
+

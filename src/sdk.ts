@@ -3,12 +3,10 @@ import { LlamaCPP } from '@runanywhere/web-llamacpp';
 import { ONNX } from '@runanywhere/web-onnx';
 import type { AccelerationMode } from '@runanywhere/web';
 
-// Using the 350M model is MUCH safer for browser stability
-export const LLM_MODEL_ID = 'lfm2-350m-q4_k_m';
-
+// Using LFM2 350M - proven to work with RunAnywhere
 const MODELS: CompactModelDef[] = [
   {
-    id: LLM_MODEL_ID,
+    id: 'lfm2-350m-q4_k_m',
     name: 'LFM2 350M',
     repo: 'LiquidAI/LFM2-350M-GGUF',
     files: ['LFM2-350M-Q4_K_M.gguf'],
@@ -26,17 +24,16 @@ export async function initSDK(): Promise<void> {
   
   _init = (async () => {
     try {
-      console.log('[SDK] Initializing with WebGPU priority...');
+      console.log('[SDK] Initializing with LFM2 350M...');
       
       await RunAnywhere.initialize({ 
         environment: SDKEnvironment.Development, 
-        debug: true, // Turned on debug to help see GPU logs
-        wasmPath: '/', // IMPORTANT: This looks in your /public folder for the .js/.wasm files
+        debug: true,
       });
 
       EventBus.shared.on('llamacpp.wasmLoaded', (evt: any) => { 
         _accel = evt.accelerationMode ?? 'cpu';
-        console.log('[SDK] Final Acceleration mode:', _accel);
+        console.log('[SDK] Acceleration mode:', _accel);
       });
 
       await LlamaCPP.register();
@@ -46,7 +43,8 @@ export async function initSDK(): Promise<void> {
       console.log('[SDK] ✓ Voice backend registered');
 
       RunAnywhere.registerModels(MODELS);
-      console.log('[SDK] ✓ Models registered');
+      console.log('[SDK] ✓ Models registered: LFM2 350M');
+
     } catch (error) {
       console.error('[SDK] Initialization error:', error);
       throw error;
