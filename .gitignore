@@ -9,3 +9,9 @@ dist/
 *.bin
 public/models/
 node_modules/
+node_modules/
+public/models/
+*.gguf
+*.bin
+dist/
+.env
