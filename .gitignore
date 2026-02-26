@@ -5,3 +5,7 @@ dist/
 *.tsbuildinfo
 .playwright-mcp/
 
+*.gguf
+*.bin
+public/models/
+node_modules/
