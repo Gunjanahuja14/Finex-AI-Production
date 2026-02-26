@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { initAI, askCoach, getDailyTip, getFinancialSnapshot, isAIReady, type AIModelState } from '../services/ai';
+import { voiceService, type VoiceServiceState } from '../services/voice';
+import { visionService, type VisionServiceState } from '../services/vision';
 
 type Message = {
   id: string;
@@ -53,7 +55,6 @@ function DownloadScreen({ state, onStart }: { state: AIModelState; onStart: () =
 }
 
 function ChatBubble({ message }: { message: Message }) {
-  // Truth-Serum messages get a special purple style
   const isTruthSerum  = message.type === 'truth-serum';
   const isBillShock   = message.type === 'bill-shock';
 
@@ -97,8 +98,79 @@ export default function CoachTab() {
   const [input, setInput]           = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [dailyTip, setDailyTip]     = useState<string | null>(null);
+  
+  // Voice state
+  const [voiceState, setVoiceState] = useState<VoiceServiceState>({
+    isListening: false,
+    isSpeaking: false,
+    isProcessing: false,
+    transcript: '',
+    error: null,
+  });
+  const [isVoiceReady, setIsVoiceReady] = useState(false);
+  
+  // Vision state
+  const [visionState, setVisionState] = useState<VisionServiceState>({
+    isProcessing: false,
+    isReady: false,
+    error: null,
+  });
+  const [isVisionReady, setIsVisionReady] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  
   const bottomRef  = useRef<HTMLDivElement>(null);
   const inputRef   = useRef<HTMLTextAreaElement>(null);
+
+  // Initialize voice services
+  useEffect(() => {
+    const initServices = async () => {
+      try {
+        await voiceService.init();
+        setIsVoiceReady(true);
+        console.log('[CoachTab] Voice service ready');
+      } catch (err) {
+        console.warn('[CoachTab] Voice service init failed:', err);
+      }
+    };
+    
+    initServices();
+  }, []);
+
+  // Initialize vision services
+  useEffect(() => {
+    const initVision = async () => {
+      try {
+        await visionService.init();
+        setIsVisionReady(true);
+        console.log('[CoachTab] Vision service ready');
+      } catch (err) {
+        console.warn('[CoachTab] Vision service init failed:', err);
+      }
+    };
+    
+    initVision();
+  }, []);
+
+  // Set up voice callbacks
+  useEffect(() => {
+    voiceService.setCallbacks({
+      onSpeechStart: () => {
+        setVoiceState(prev => ({ ...prev, isListening: true }));
+      },
+      onSpeechEnd: (transcript: string) => {
+        setVoiceState(prev => ({ ...prev, isListening: false, transcript }));
+        if (transcript.trim()) {
+          setInput(transcript);
+        }
+      },
+      onTranscriptUpdate: (text: string) => {
+        setVoiceState(prev => ({ ...prev, transcript: text }));
+      },
+      onError: (error: string) => {
+        setVoiceState(prev => ({ ...prev, error, isListening: false }));
+      },
+    });
+  }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -127,7 +199,6 @@ export default function CoachTab() {
 
       const proactiveMessages: Message[] = [];
 
-      // Bill Shock alert → inject as first assistant message
       if (snapshot.billShockAlert) {
         proactiveMessages.push({
           id:      'bill-shock-0',
@@ -137,7 +208,6 @@ export default function CoachTab() {
         });
       }
 
-      // Truth-Serum anomaly questions → inject after bill shock
       snapshot.truthSerumMessages.forEach((msg, i) => {
         proactiveMessages.push({
           id:      `truth-serum-${i}`,
@@ -153,8 +223,8 @@ export default function CoachTab() {
     } catch {}
   }, []);
 
-  const sendMessage = useCallback(async () => {
-    const text = input.trim();
+  const sendMessage = useCallback(async (overrideText?: string) => {
+    const text = (overrideText || input).trim();
     if (!text || isGenerating || !isAIReady()) return;
 
     const userMsg: Message      = { id: Date.now().toString(), role: 'user', content: text, type: 'normal' };
@@ -197,6 +267,104 @@ export default function CoachTab() {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
   };
 
+  // Voice input handlers
+  const toggleVoiceInput = useCallback(async () => {
+    if (voiceState.isListening) {
+      await voiceService.stopListening();
+      setVoiceState(prev => ({ ...prev, isListening: false }));
+    } else {
+      try {
+        await voiceService.startListening();
+      } catch (err) {
+        console.error('Voice input error:', err);
+      }
+    }
+  }, [voiceState.isListening]);
+
+  // Voice output (TTS) handler
+  const handleSpeak = useCallback(async (text: string) => {
+    if (voiceState.isSpeaking) {
+      voiceService.stopSpeaking();
+      setVoiceState(prev => ({ ...prev, isSpeaking: false }));
+    } else {
+      try {
+        setVoiceState(prev => ({ ...prev, isSpeaking: true }));
+        await voiceService.speak(text);
+        setVoiceState(prev => ({ ...prev, isSpeaking: false }));
+      } catch (err) {
+        console.error('TTS error:', err);
+        setVoiceState(prev => ({ ...prev, isSpeaking: false }));
+      }
+    }
+  }, [voiceState.isSpeaking]);
+
+  // Vision input handler - for uploading receipts/images
+  const handleImageUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !isVisionReady) return;
+
+    setVisionState(prev => ({ ...prev, isProcessing: true }));
+
+    try {
+      const result = await visionService.analyzeReceipt(file);
+      
+      // Add user message with image analysis
+      const userMsg: Message = { 
+        id: Date.now().toString(), 
+        role: 'user', 
+        content: `📷 I uploaded an image. Can you help me extract the details?\n\n${result.description}`,
+        type: 'normal' 
+      };
+      setMessages(prev => [...prev, userMsg]);
+      
+      // Send to AI for further processing
+      const assistantId = (Date.now() + 1).toString();
+      const assistantMsg: Message = { 
+        id: assistantId, 
+        role: 'assistant', 
+        content: '', 
+        streaming: true, 
+        type: 'normal' 
+      };
+      setMessages(prev => [...prev, assistantMsg]);
+
+      // Ask AI to process the receipt
+      const prompt = `A user just uploaded a receipt/image. Here's what I can see:\n${result.description}\n\n${result.extractedText ? `Extracted text: ${result.extractedText}` : ''}\n${result.entities?.amount ? `Amount: ₹${result.entities.amount}` : ''}\n${result.entities?.vendor ? `Vendor: ${result.entities.vendor}` : ''}\n${result.entities?.date ? `Date: ${result.entities.date}` : ''}\n\nPlease help them categorize this expense and add it to their records if applicable.`;
+      
+      let accumulated = '';
+      try {
+        const answer = await askCoach(prompt);
+        accumulated = answer;
+        const words = answer.split(' ');
+        let built = '';
+        for (const word of words) {
+          built += (built ? ' ' : '') + word;
+          setMessages(prev =>
+            prev.map(m => m.id === assistantId ? { ...m, content: built } : m)
+          );
+          await new Promise(r => setTimeout(r, 28));
+        }
+      } catch {
+        accumulated = 'I received your image but had trouble analyzing it. Could you try describing the expense?';
+        setMessages(prev =>
+          prev.map(m => m.id === assistantId ? { ...m, content: accumulated } : m)
+        );
+      } finally {
+        setMessages(prev =>
+          prev.map(m => m.id === assistantId ? { ...m, content: accumulated, streaming: false } : m)
+        );
+      }
+    } catch (err) {
+      console.error('Vision analysis error:', err);
+    } finally {
+      setVisionState(prev => ({ ...prev, isProcessing: false }));
+      // Reset file input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  }, [isVisionReady]);
+
   if (modelState.status !== 'ready') {
     return <><CoachStyles/><DownloadScreen state={modelState} onStart={handleDownload}/></>;
   }
@@ -206,13 +374,34 @@ export default function CoachTab() {
   return (
     <>
       <CoachStyles/>
+      {/* Hidden file input for image upload */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        onChange={handleImageUpload}
+        style={{ display: 'none' }}
+      />
+      
       <div className="coach-root">
         <div className="coach-header">
           <div className="coach-header-left">
             <div className="coach-status-dot"/>
             <span className="coach-header-title">FINEX Coach</span>
           </div>
-          <span className="coach-header-badge">Local AI · 0 KB to Cloud</span>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <span className="coach-header-badge">Local AI · 0 KB to Cloud</span>
+            {isVoiceReady && (
+              <span className="coach-voice-badge" title="Voice Ready">
+                🎤
+              </span>
+            )}
+            {isVisionReady && (
+              <span className="coach-vision-badge" title="Vision Ready">
+                📷
+              </span>
+            )}
+          </div>
         </div>
 
         {dailyTip && (
@@ -242,7 +431,6 @@ export default function CoachTab() {
             </div>
           )}
 
-          {/* Show suggestion chips even when proactive messages are present */}
           {messages.length > 0 && !hasProactiveMessages && messages.every(m => m.role !== 'user') && (
             <div className="coach-suggestions" style={{ padding: '0 0 8px' }}>
               {['Tell me more', 'How to improve?', 'Show my savings'].map(s => (
@@ -259,17 +447,74 @@ export default function CoachTab() {
         </div>
 
         <div className="coach-input-bar">
+          {/* Image upload button */}
+          <button
+            className="coach-icon-btn"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={!isVisionReady || isGenerating || visionState.isProcessing}
+            title="Upload receipt or image"
+          >
+            {visionState.isProcessing ? (
+              <span style={{ width: 16, height: 16, border: '2px solid var(--accent)', borderTopColor: 'transparent', borderRadius: '50%', display: 'inline-block', animation: 'spin 0.8s linear infinite' }}/>
+            ) : (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                <circle cx="8.5" cy="8.5" r="1.5"/>
+                <polyline points="21 15 16 10 5 21"/>
+              </svg>
+            )}
+          </button>
+          
+          {/* Voice input button */}
+          <button
+            className={`coach-icon-btn ${voiceState.isListening ? 'listening' : ''}`}
+            onClick={toggleVoiceInput}
+            disabled={!isVoiceReady || isGenerating}
+            title={voiceState.isListening ? 'Stop listening' : 'Start voice input'}
+          >
+            {voiceState.isListening ? (
+              <span style={{ width: 16, height: 16, border: '2px solid #EF4444', borderTopColor: 'transparent', borderRadius: '50%', display: 'inline-block', animation: 'spin 0.8s linear infinite' }}/>
+            ) : (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                <line x1="12" y1="19" x2="12" y2="23"/>
+                <line x1="8" y1="23" x2="16" y2="23"/>
+              </svg>
+            )}
+          </button>
+          
           <textarea
             ref={inputRef}
             className="coach-input"
-            placeholder="Reply to your coach…"
-            value={input}
+            placeholder={voiceState.isListening ? "Listening..." : "Reply to your coach…"}
+            value={voiceState.isListening ? voiceState.transcript : input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             rows={1}
             disabled={isGenerating}
           />
-          <button className="coach-send-btn" onClick={sendMessage}
+          
+          {/* TTS button */}
+          <button
+            className={`coach-icon-btn ${voiceState.isSpeaking ? 'speaking' : ''}`}
+            onClick={() => {
+              const lastAssistantMsg = messages.filter(m => m.role === 'assistant' && m.content).pop();
+              if (lastAssistantMsg) {
+                handleSpeak(lastAssistantMsg.content);
+              }
+            }}
+            disabled={!isVoiceReady || messages.filter(m => m.role === 'assistant' && m.content).length === 0}
+            title="Speak the last message"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+              <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+              <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+            </svg>
+          </button>
+          
+          <button className="coach-send-btn" onClick={() => sendMessage()}
             disabled={isGenerating || !input.trim()}>
             {isGenerating
               ? <span style={{ width:16, height:16, border:'2px solid #000', borderTopColor:'transparent', borderRadius:'50%', display:'inline-block', animation:'spin 0.8s linear infinite' }}/>
@@ -277,6 +522,13 @@ export default function CoachTab() {
             }
           </button>
         </div>
+        
+        {voiceState.isListening && (
+          <div className="coach-voice-indicator">
+            <span className="voice-dot"/>
+            Listening... (speak now)
+          </div>
+        )}
       </div>
     </>
   );
@@ -294,6 +546,7 @@ function CoachStyles() {
       @keyframes spin { to { transform: rotate(360deg); } }
       @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
       @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+      @keyframes voice-pulse { 0%,100%{transform:scale(1);opacity:1} 50%{transform:scale(1.1);opacity:0.7} }
 
       .coach-root { display:flex; flex-direction:column; height:100%; min-height:0; background:var(--bg); font-family:'SF Pro Text','Segoe UI',system-ui,sans-serif; color:var(--text); }
       .coach-header { display:flex; align-items:center; justify-content:space-between; padding:14px 18px; border-bottom:1px solid var(--border); background:var(--surface); flex-shrink:0; }
@@ -301,6 +554,7 @@ function CoachStyles() {
       .coach-status-dot { width:8px; height:8px; border-radius:50%; background:var(--accent); box-shadow:0 0 6px var(--accent); animation:pulse 2s infinite; }
       .coach-header-title { font-size:15px; font-weight:600; }
       .coach-header-badge { font-size:11px; color:var(--accent); background:var(--accent-dim); border:1px solid rgba(0,229,160,0.3); padding:2px 8px; border-radius:20px; }
+      .coach-voice-badge, .coach-vision-badge { font-size:12px; }
 
       .coach-tip-banner { display:flex; align-items:flex-start; gap:10px; margin:12px 16px 0; padding:12px 14px; background:var(--accent-dim); border:1px solid rgba(0,229,160,0.25); border-radius:var(--radius-sm); flex-shrink:0; }
       .coach-tip-icon { font-size:16px; flex-shrink:0; }
@@ -327,9 +581,19 @@ function CoachStyles() {
       .coach-input { flex:1; background:var(--surface2); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text); padding:10px 14px; font-size:14px; font-family:inherit; resize:none; outline:none; line-height:1.5; max-height:120px; transition:border-color 0.15s; }
       .coach-input:focus { border-color:var(--accent); }
       .coach-input::placeholder { color:var(--text-muted); }
+      
+      .coach-icon-btn { width:40px; height:40px; border-radius:10px; background:var(--surface2); border:1px solid var(--border); color:var(--text); cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0; transition:all 0.15s; }
+      .coach-icon-btn:hover:not(:disabled) { border-color:var(--accent); color:var(--accent); }
+      .coach-icon-btn:disabled { opacity:0.4; cursor:not-allowed; }
+      .coach-icon-btn.listening { border-color:#EF4444; background:rgba(239,68,68,0.1); color:#EF4444; animation:voice-pulse 1s infinite; }
+      .coach-icon-btn.speaking { border-color:var(--accent); background:var(--accent-dim); color:var(--accent); }
+      
       .coach-send-btn { width:40px; height:40px; border-radius:10px; background:var(--accent); border:none; color:#000; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0; transition:all 0.15s; }
       .coach-send-btn:hover:not(:disabled) { background:#00ffb3; transform:scale(1.05); }
       .coach-send-btn:disabled { opacity:0.4; cursor:not-allowed; }
+
+      .coach-voice-indicator { display:flex; align-items:center; justify-content:center; gap:8px; padding:8px; background:rgba(239,68,68,0.1); border-top:1px solid rgba(239,68,68,0.3); color:#EF4444; font-size:12px; }
+      .voice-dot { width:8px; height:8px; border-radius:50%; background:#EF4444; animation:voice-pulse 1s infinite; }
 
       .coach-download-screen { display:flex; align-items:center; justify-content:center; height:100%; background:var(--bg); padding:24px; font-family:'SF Pro Text','Segoe UI',system-ui,sans-serif; }
       .coach-download-card { width:100%; max-width:420px; background:var(--surface); border:1px solid var(--border); border-radius:20px; padding:36px 32px; display:flex; flex-direction:column; align-items:center; gap:16px; text-align:center; }

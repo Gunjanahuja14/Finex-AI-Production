@@ -467,6 +467,80 @@ export default function DashboardTab() {
         </div>
       )}
 
+      {/* Budget Progress */}
+      {truth.budgetProgress && truth.budgetProgress.length > 0 && (
+        <div className="card" style={{ border: '1px solid rgba(59,130,246,0.25)', background: 'rgba(59,130,246,0.04)' }}>
+          <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '16px' }}>
+            🎯 Budget Progress
+          </div>
+          {truth.budgetProgress.map((budget) => {
+            const getStatusColor = () => {
+              if (budget.status === 'danger') return '#EF4444';
+              if (budget.status === 'warning') return '#F59E0B';
+              return '#10B981';
+            };
+            const getStatusIcon = () => {
+              if (budget.status === 'danger') return '❌';
+              if (budget.status === 'warning') return '⚠️';
+              return '✅';
+            };
+            const statusColor = getStatusColor();
+            
+            return (
+              <div key={budget.category} style={{ marginBottom: '16px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span style={{ fontSize: '12px' }}>{getStatusIcon()}</span>
+                    <span style={{ fontSize: '13px', fontWeight: 600 }}>{budget.category}</span>
+                  </div>
+                  <div style={{ fontSize: '12px', color: 'var(--muted)' }}>
+                    ₹{budget.spent.toLocaleString()} / ₹{budget.budget.toLocaleString()}
+                  </div>
+                </div>
+                <div style={{ height: '8px', background: 'rgba(0,0,0,0.06)', borderRadius: '4px', overflow: 'hidden' }}>
+                  <div style={{ 
+                    height: '100%', 
+                    width: `${Math.min(budget.percentUsed, 100)}%`, 
+                    background: statusColor, 
+                    borderRadius: '4px',
+                  }} />
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px', fontSize: '11px' }}>
+                  <span style={{ color: statusColor, fontWeight: 600 }}>{budget.percentUsed}%</span>
+                  <span style={{ color: budget.remaining > 0 ? 'var(--muted)' : '#EF4444' }}>
+                    {budget.remaining > 0 ? `₹${budget.remaining} left` : `₹${Math.abs(budget.remaining)} over`}
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Weekend vs Weekday Insight */}
+      {truth.weekendVsWeekday && truth.weekendVsWeekday.message && (
+        <div className="card" style={{ 
+          border: truth.weekendVsWeekday.isHigh ? '1px solid rgba(239,68,68,0.25)' : '1px solid rgba(16,185,129,0.25)',
+          background: truth.weekendVsWeekday.isHigh ? 'rgba(239,68,68,0.04)' : 'rgba(16,185,129,0.04)',
+        }}>
+          <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '8px' }}>
+            {truth.weekendVsWeekday.isHigh ? '📊 Weekend Insight' : '✅ Weekend Insight'}
+          </div>
+          <div style={{ fontSize: '13px', lineHeight: '1.6' }}>
+            {truth.weekendVsWeekday.message}
+          </div>
+          <div style={{ display: 'flex', gap: '16px', marginTop: '12px', fontSize: '12px' }}>
+            <div>
+              <span style={{ color: 'var(--muted)' }}>Weekend: </span>
+              <span style={{ fontWeight: 600 }}>₹{truth.weekendVsWeekday.weekendTotal.toLocaleString()}</span>
+            </div>
+            <div>
+              <span style={{ color: 'var(--muted)' }}>Weekday: </span>
+              <span style={{ fontWeight: 600 }}>₹{truth.weekendVsWeekday.weekdayTotal.toLocaleString()}</span>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
