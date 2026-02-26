@@ -3,16 +3,19 @@ import { LlamaCPP } from '@runanywhere/web-llamacpp';
 import { ONNX } from '@runanywhere/web-onnx';
 import type { AccelerationMode } from '@runanywhere/web';
 
-// Using LFM2 350M - proven to work with RunAnywhere
+// IMPORTANT:
+// Put your GGUF file here:
+// public/models/gemma-2-2b-it-Q4_K_M.gguf
+
 const MODELS: CompactModelDef[] = [
   {
-    id: 'lfm2-350m-q4_k_m',
-    name: 'LFM2 350M',
-    repo: 'LiquidAI/LFM2-350M-GGUF',
-    files: ['LFM2-350M-Q4_K_M.gguf'],
+    id: 'gemma-local',
+    name: 'Gemma 2 2B Local',
+    repo: 'local',
+    files: ['/models/gemma-2-2b-it-Q4_K_M.gguf'], // lowercase models
     framework: LLMFramework.LlamaCpp,
     modality: ModelCategory.Language,
-    memoryRequirement: 250_000_000,
+    memoryRequirement: 2_000_000_000,
   },
 ];
 
@@ -21,41 +24,26 @@ let _accel: AccelerationMode | null = null;
 
 export async function initSDK(): Promise<void> {
   if (_init) return _init;
-  
+
   _init = (async () => {
-    try {
-      console.log('[SDK] Initializing with LFM2 350M...');
-      
-      await RunAnywhere.initialize({ 
-        environment: SDKEnvironment.Development, 
-        debug: true,
-      });
+    await RunAnywhere.initialize({
+      environment: SDKEnvironment.Development,
+      debug: true,
+    });
 
-      EventBus.shared.on('llamacpp.wasmLoaded', (evt: any) => { 
-        _accel = evt.accelerationMode ?? 'cpu';
-        console.log('[SDK] Acceleration mode:', _accel);
-      });
+    EventBus.shared.on('llamacpp.wasmLoaded', (evt: any) => {
+      _accel = evt.accelerationMode ?? 'cpu';
+      console.log('[SDK] Acceleration mode:', _accel);
+    });
 
-      await LlamaCPP.register();
-      console.log('[SDK] ✓ LLM backend registered');
+    await LlamaCPP.register();
+    await ONNX.register();
 
-      await ONNX.register();
-      console.log('[SDK] ✓ Voice backend registered');
-
-      RunAnywhere.registerModels(MODELS);
-      console.log('[SDK] ✓ Models registered: LFM2 350M');
-
-    } catch (error) {
-      console.error('[SDK] Initialization error:', error);
-      throw error;
-    }
+    RunAnywhere.registerModels(MODELS);
+    console.log('[SDK] ✓ Gemma local model registered');
   })();
 
   return _init;
-}
-
-export function getAccelerationMode(): AccelerationMode | null { 
-  return _accel; 
 }
 
 export { RunAnywhere };

@@ -25,7 +25,6 @@ export class SimpleDB {
     this.save();
   }
 
-  // ── UPDATE an existing transaction by id ──────────────────────────────────
   async update(id: number, changes: Partial<Omit<Transaction, 'id' | 'createdAt'>>): Promise<void> {
     const idx = this.txns.findIndex(t => t.id === id);
     if (idx !== -1) {
@@ -34,7 +33,6 @@ export class SimpleDB {
     }
   }
 
-  // ── DELETE a transaction by id ────────────────────────────────────────────
   async remove(id: number): Promise<void> {
     this.txns = this.txns.filter(t => t.id !== id);
     this.save();
@@ -44,10 +42,25 @@ export class SimpleDB {
     return [...this.txns].reverse();
   }
 
+  // ── User-entered balance (privacy-first: stored only in localStorage) ──────
+  getBalance(): number | null {
+    const raw = localStorage.getItem('zenith-balance');
+    if (raw === null) return null;
+    const n = parseFloat(raw);
+    return isNaN(n) ? null : n;
+  }
+
+  setBalance(amount: number): void {
+    localStorage.setItem('zenith-balance', String(amount));
+  }
+
+  // ── Summary excludes Savings ───────────────────────────────────────────────
   async getSummary() {
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - 30);
-    const txns = this.txns.filter(t => new Date(t.date) >= cutoff);
+    const txns = this.txns.filter(t =>
+      new Date(t.date) >= cutoff && t.category !== 'Savings'
+    );
     const total = txns.reduce((sum, t) => sum + t.amount, 0);
     const count = txns.length;
     return {
@@ -57,10 +70,13 @@ export class SimpleDB {
     };
   }
 
+  // ── Categories excludes Savings ────────────────────────────────────────────
   async getCategories() {
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - 30);
-    const txns = this.txns.filter(t => new Date(t.date) >= cutoff);
+    const txns = this.txns.filter(t =>
+      new Date(t.date) >= cutoff && t.category !== 'Savings'
+    );
     const cats: Record<string, { amount: number; count: number }> = {};
     txns.forEach(t => {
       if (!cats[t.category]) cats[t.category] = { amount: 0, count: 0 };
@@ -68,7 +84,11 @@ export class SimpleDB {
       cats[t.category].count += 1;
     });
     return Object.entries(cats)
-      .map(([category, data]) => ({ category, amount: parseFloat(data.amount.toFixed(2)), count: data.count }))
+      .map(([category, data]) => ({
+        category,
+        amount: parseFloat(data.amount.toFixed(2)),
+        count: data.count,
+      }))
       .sort((a, b) => b.amount - a.amount);
   }
 
@@ -99,20 +119,72 @@ export class SimpleDB {
       .sort((a, b) => b.count - a.count);
   }
 
+  // ── Current month EXPENSE total (Savings excluded) ────────────────────────
   async getCurrentMonthTotal() {
     const now = new Date();
     const txns = this.txns.filter(t => {
       const d = new Date(t.date);
-      return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+      return (
+        d.getMonth() === now.getMonth() &&
+        d.getFullYear() === now.getFullYear() &&
+        t.category !== 'Savings'
+      );
+    });
+    return parseFloat(txns.reduce((sum, t) => sum + t.amount, 0).toFixed(2));
+  }
+
+  // ── Savings this month ────────────────────────────────────────────────────
+  async getCurrentMonthSavings() {
+    const now = new Date();
+    const txns = this.txns.filter(t => {
+      const d = new Date(t.date);
+      return (
+        d.getMonth() === now.getMonth() &&
+        d.getFullYear() === now.getFullYear() &&
+        t.category === 'Savings'
+      );
+    });
+    return parseFloat(txns.reduce((sum, t) => sum + t.amount, 0).toFixed(2));
+  }
+
+  // ── Savings last month ────────────────────────────────────────────────────
+  async getLastMonthSavings() {
+    const now = new Date();
+    const lastMonth = now.getMonth() === 0 ? 11 : now.getMonth() - 1;
+    const lastYear  = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
+    const txns = this.txns.filter(t => {
+      const d = new Date(t.date);
+      return d.getMonth() === lastMonth && d.getFullYear() === lastYear && t.category === 'Savings';
     });
     return parseFloat(txns.reduce((sum, t) => sum + t.amount, 0).toFixed(2));
   }
 
   async getAISnapshot() {
-    const [summary, categories, recurring, monthTotal] = await Promise.all([
-      this.getSummary(), this.getCategories(), this.getRecurring(), this.getCurrentMonthTotal(),
-    ]);
-    return { last30Days: summary, monthlyTotal: monthTotal, categories, recurring, transactionCount: this.txns.length };
+    const [summary, categories, recurring, monthTotal, totalSavings, lastMonthSavings] =
+      await Promise.all([
+        this.getSummary(),
+        this.getCategories(),
+        this.getRecurring(),
+        this.getCurrentMonthTotal(),
+        this.getCurrentMonthSavings(),
+        this.getLastMonthSavings(),
+      ]);
+
+    const savingsGrowthPct =
+      lastMonthSavings > 0
+        ? parseFloat((((totalSavings - lastMonthSavings) / lastMonthSavings) * 100).toFixed(1))
+        : null;
+
+    return {
+      last30Days: summary,
+      monthlyTotal: monthTotal,
+      categories,
+      recurring,
+      transactionCount: this.txns.length,
+      totalSavings,
+      lastMonthSavings,
+      savingsGrowthPct,
+    };
   }
 
   private save() {

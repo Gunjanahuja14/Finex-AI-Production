@@ -74,7 +74,7 @@ export default defineConfig({
   },
 
   optimizeDeps: {
-    exclude: ['@runanywhere/web-llamacpp', '@runanywhere/web-onnx'],
+    exclude: ['@runanywhere/web-llamacpp', '@runanywhere/web-onnx', '@wllama/wllama'],
   },
 
   assetsInclude: ['**/*.wasm'],

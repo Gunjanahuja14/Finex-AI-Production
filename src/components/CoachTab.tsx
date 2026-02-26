@@ -1,446 +1,351 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { aiService } from '../services/ai';
-import { ModelManager, ModelCategory } from '@runanywhere/web';
-import ModelDownloader from './ModelDownloader';
+import { initAI, askCoach, getDailyTip, getFinancialSnapshot, isAIReady, type AIModelState } from '../services/ai';
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Constants
-// ──────────────────────────────────────────────────────────────────────────────
-const SUGGESTIONS = [
-  "What's my total spending this month?",
-  "Which category costs me the most?",
-  "Do I have any recurring purchases?",
-  "How can I reduce my food budget?",
-];
+type Message = {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  streaming?: boolean;
+  type?: 'truth-serum' | 'bill-shock' | 'normal';
+};
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Types
-// ──────────────────────────────────────────────────────────────────────────────
-interface Message {
-  role: 'user' | 'coach';
-  text: string;
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Main Component
-// ──────────────────────────────────────────────────────────────────────────────
-export default function CoachTab() {
-  const [msgs, setMsgs] = useState<Message[]>([]);
-  const [input, setInput] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [modelReady, setModelReady] = useState(false);
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-  
-  // Use ref to track if component is mounted
-  const isMountedRef = useRef(true);
-
-  // ──────────────────────────────────────────────────────────────────────────────
-  // Effects
-  // ──────────────────────────────────────────────────────────────────────────────
-  useEffect(() => {
-    isMountedRef.current = true;
-    
-    // Check model status
-    const checkModel = () => {
-      if (isMountedRef.current) {
-        setModelReady(ModelManager.getLoadedModel(ModelCategory.Language) !== null);
-      }
-    };
-    
-    checkModel();
-    const interval = setInterval(checkModel, 1000);
-    
-    return () => {
-      isMountedRef.current = false;
-      clearInterval(interval);
-    };
-  }, []);
-
-  // Auto-scroll to bottom when messages change
-  useEffect(() => {
-    if (bottomRef.current) {
-      bottomRef.current.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [msgs]);
-
-  // Focus input when not loading
-  useEffect(() => {
-    if (!isLoading && inputRef.current) {
-      inputRef.current.focus();
-    }
-  }, [isLoading]);
-
-  // ──────────────────────────────────────────────────────────────────────────────
-  // Handlers
-  // ──────────────────────────────────────────────────────────────────────────────
-  const ask = useCallback(async (question?: string) => {
-    const q = question ?? input.trim();
-    
-    // Validation
-    if (!q || !modelReady || isLoading) return;
-    
-    // Clear input and add user message
-    setInput('');
-    setIsLoading(true);
-    
-    // Add user message and placeholder for coach response
-    setMsgs(prev => [...prev, { role: 'user', text: q }, { role: 'coach', text: '...' }]);
-    
-    // Small delay to allow UI to update
-    await new Promise(resolve => setTimeout(resolve, 50));
-
-    // Token accumulator for batching UI updates
-    const tokenBuffer = { current: '' };
-    let flushScheduled = false;
-
-    const flushBuffer = () => {
-      if (tokenBuffer.current && isMountedRef.current) {
-        setMsgs(prev => {
-          const updated = [...prev];
-          const lastMsg = updated[updated.length - 1];
-          if (lastMsg?.role === 'coach') {
-            updated[updated.length - 1] = { 
-              role: 'coach', 
-              text: lastMsg.text + tokenBuffer.current 
-            };
-          }
-          return updated;
-        });
-        tokenBuffer.current = '';
-      }
-      flushScheduled = false;
-    };
-
-    // Token handler - batches updates every 50ms
-    const handleToken = (token: string) => {
-      tokenBuffer.current += token;
-      
-      if (!flushScheduled) {
-        flushScheduled = true;
-        setTimeout(flushBuffer, 50);
-      }
-    };
-
-    try {
-      const response = await aiService.getAdvice(q, handleToken);
-      
-      // Flush any remaining tokens
-      flushBuffer();
-      
-      // Set final response
-      if (isMountedRef.current) {
-        setMsgs(prev => {
-          const updated = [...prev];
-          if (updated.length > 0) {
-            updated[updated.length - 1] = { role: 'coach', text: response };
-          }
-          return updated;
-        });
-      }
-    } catch (err) {
-      if (isMountedRef.current) {
-        setMsgs(prev => {
-          const updated = [...prev];
-          if (updated.length > 0) {
-            updated[updated.length - 1] = { 
-              role: 'coach', 
-              text: '❌ ' + (err instanceof Error ? err.message : 'An error occurred') 
-            };
-          }
-          return updated;
-        });
-      }
-    } finally {
-      if (isMountedRef.current) {
-        setIsLoading(false);
-      }
-    }
-  }, [input, modelReady, isLoading]);
-
-  // Handle Enter key
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !isLoading && modelReady) {
-      e.preventDefault();
-      ask();
-    }
-  };
-
-  // ──────────────────────────────────────────────────────────────────────────────
-  // Render Helpers
-  // ──────────────────────────────────────────────────────────────────────────────
-  const renderLoadingDots = () => (
-    <span style={{ display: 'flex', gap: '4px', alignItems: 'center', padding: '2px 0' }}>
-      {[0, 1, 2].map(j => (
-        <span 
-          key={j} 
-          style={{
-            width: '6px', 
-            height: '6px', 
-            borderRadius: '50%', 
-            background: 'var(--primary)',
-            display: 'inline-block',
-            animation: `bounce 0.9s ${j * 0.15}s ease-in-out infinite`,
-          }}
-        />
-      ))}
-    </span>
-  );
-
-  const renderMessage = (m: Message, index: number) => {
-    const isUser = m.role === 'user';
-    
-    return (
-      <div 
-        key={index}
-        style={{
-          display: 'flex',
-          flexDirection: isUser ? 'row-reverse' : 'row',
-          gap: '10px',
-          alignItems: 'flex-start',
-        }}
-      >
-        {/* Avatar */}
-        {!isUser && (
-          <div style={{
-            width: '34px',
-            height: '34px',
-            borderRadius: '10px',
-            flexShrink: 0,
-            background: 'linear-gradient(135deg, #10B981, #059669)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            marginTop: '2px',
-          }}>
-            <svg 
-              width="16" 
-              height="16" 
-              viewBox="0 0 24 24" 
-              fill="none" 
-              stroke="white" 
-              strokeWidth="2" 
-              strokeLinecap="round" 
-              strokeLinejoin="round"
-            >
-              <path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 1 1 7.072 0l-.548.547A3.374 3.374 0 0 0 14 18.469V19a2 2 0 1 1-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
-            </svg>
+function DownloadScreen({ state, onStart }: { state: AIModelState; onStart: () => void }) {
+  const isLoading = state.status === 'downloading' || state.status === 'initializing';
+  return (
+    <div className="coach-download-screen">
+      <div className="coach-download-card">
+        <div className="coach-brain-icon">
+          <svg width="56" height="56" viewBox="0 0 56 56" fill="none">
+            <circle cx="28" cy="28" r="27" stroke="var(--accent)" strokeWidth="2"/>
+            <path d="M18 28c0-5.5 4.5-10 10-10s10 4.5 10 10" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round"/>
+            <circle cx="28" cy="34" r="4" fill="var(--accent)"/>
+            <path d="M24 28v-4M32 28v-4" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round"/>
+          </svg>
+        </div>
+        <h2 className="coach-dl-title">FINEX Coach</h2>
+        <p className="coach-dl-subtitle">
+          Powered by Gemma 2B — runs locally, reads your real transactions.
+        </p>
+        <div className="coach-model-badge">Gemma 2B · Q4_K_M · ~1.5 GB · One-time download</div>
+        {state.status === 'idle' && (
+          <button className="coach-dl-button" onClick={onStart}>Download & Activate</button>
+        )}
+        {isLoading && (
+          <div className="coach-progress-wrap">
+            <div className="coach-progress-label">
+              {state.status === 'initializing' ? 'Initializing model…' : `Downloading… ${state.progress}%`}
+            </div>
+            <div className="coach-progress-track">
+              <div className="coach-progress-fill" style={{ width: `${state.progress}%` }}/>
+            </div>
+            <div className="coach-progress-note">Only downloads once. Loads from cache next time.</div>
           </div>
         )}
-        
-        {/* Message Bubble */}
-        <div style={{
-          maxWidth: '78%',
-          padding: '13px 18px',
-          borderRadius: '16px',
-          background: isUser ? '#0D1117' : '#FFFFFF',
-          color: isUser ? '#fff' : 'var(--text)',
-          fontSize: '14px',
-          lineHeight: 1.65,
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-word',
-          boxShadow: isUser ? 'none' : '0 1px 6px rgba(0,0,0,0.07)',
-          border: isUser ? 'none' : '1px solid #F3F4F6',
-          borderBottomRightRadius: isUser ? '4px' : '16px',
-          borderBottomLeftRadius: isUser ? '16px' : '4px',
-        }}>
-          {m.text === '...' ? renderLoadingDots() : m.text}
-        </div>
+        {state.status === 'error' && (
+          <div className="coach-error">
+            <span>⚠ {state.error ?? 'Failed to load model'}</span>
+            <button className="coach-retry-btn" onClick={onStart}>Retry</button>
+          </div>
+        )}
       </div>
-    );
+    </div>
+  );
+}
+
+function ChatBubble({ message }: { message: Message }) {
+  // Truth-Serum messages get a special purple style
+  const isTruthSerum  = message.type === 'truth-serum';
+  const isBillShock   = message.type === 'bill-shock';
+
+  return (
+    <div className={`coach-bubble-wrap ${message.role}`}>
+      {message.role === 'assistant' && (
+        <div className="coach-avatar" style={{
+          background: isTruthSerum ? '#8B5CF6' : isBillShock ? '#EF4444' : 'var(--accent)',
+        }}>
+          {isTruthSerum ? '🧪' : isBillShock ? '⚡' : 'F'}
+        </div>
+      )}
+      <div
+        className={`coach-bubble ${message.role}`}
+        style={
+          isTruthSerum ? { borderColor: 'rgba(139,92,246,0.3)', background: 'rgba(139,92,246,0.08)' } :
+          isBillShock  ? { borderColor: 'rgba(239,68,68,0.3)',  background: 'rgba(239,68,68,0.06)' } :
+          undefined
+        }
+      >
+        {isTruthSerum && (
+          <div style={{ fontSize: '10px', fontWeight: 700, color: '#8B5CF6', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '5px' }}>
+            Spending Truth-Serum
+          </div>
+        )}
+        {isBillShock && (
+          <div style={{ fontSize: '10px', fontWeight: 700, color: '#EF4444', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '5px' }}>
+            Bill Shock Alert
+          </div>
+        )}
+        {message.content}
+        {message.streaming && <span className="coach-cursor"/>}
+      </div>
+    </div>
+  );
+}
+
+export default function CoachTab() {
+  const [modelState, setModelState] = useState<AIModelState>({ status: 'idle', progress: 0 });
+  const [messages, setMessages]     = useState<Message[]>([]);
+  const [input, setInput]           = useState('');
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [dailyTip, setDailyTip]     = useState<string | null>(null);
+  const bottomRef  = useRef<HTMLDivElement>(null);
+  const inputRef   = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  useEffect(() => {
+    if (isAIReady()) {
+      setModelState({ status: 'ready', progress: 100 });
+      loadContextualMessages();
+    }
+  }, []);
+
+  const handleDownload = useCallback(async () => {
+    setModelState({ status: 'downloading', progress: 0 });
+    try {
+      await initAI((state) => setModelState(state));
+      loadContextualMessages();
+    } catch {}
+  }, []);
+
+  // Load daily tip + inject Truth-Serum / Bill Shock as first messages
+  const loadContextualMessages = useCallback(async () => {
+    try {
+      const [tip, snapshot] = await Promise.all([getDailyTip(), getFinancialSnapshot()]);
+      setDailyTip(tip);
+
+      const proactiveMessages: Message[] = [];
+
+      // Bill Shock alert → inject as first assistant message
+      if (snapshot.billShockAlert) {
+        proactiveMessages.push({
+          id:      'bill-shock-0',
+          role:    'assistant',
+          content: snapshot.billShockAlert,
+          type:    'bill-shock',
+        });
+      }
+
+      // Truth-Serum anomaly questions → inject after bill shock
+      snapshot.truthSerumMessages.forEach((msg, i) => {
+        proactiveMessages.push({
+          id:      `truth-serum-${i}`,
+          role:    'assistant',
+          content: msg,
+          type:    'truth-serum',
+        });
+      });
+
+      if (proactiveMessages.length > 0) {
+        setMessages(proactiveMessages);
+      }
+    } catch {}
+  }, []);
+
+  const sendMessage = useCallback(async () => {
+    const text = input.trim();
+    if (!text || isGenerating || !isAIReady()) return;
+
+    const userMsg: Message      = { id: Date.now().toString(), role: 'user', content: text, type: 'normal' };
+    const assistantId           = (Date.now() + 1).toString();
+    const assistantMsg: Message = { id: assistantId, role: 'assistant', content: '', streaming: true, type: 'normal' };
+
+    setMessages(prev => [...prev, userMsg, assistantMsg]);
+    setInput('');
+    setIsGenerating(true);
+
+    let accumulated = '';
+    try {
+      const answer = await askCoach(text);
+      accumulated = answer;
+      const words = answer.split(' ');
+      let built = '';
+      for (const word of words) {
+        built += (built ? ' ' : '') + word;
+        const snapshot = built;
+        setMessages(prev =>
+          prev.map(m => m.id === assistantId ? { ...m, content: snapshot } : m)
+        );
+        await new Promise(r => setTimeout(r, 28));
+      }
+    } catch {
+      accumulated = 'Sorry, something went wrong. Please try again.';
+      setMessages(prev =>
+        prev.map(m => m.id === assistantId ? { ...m, content: accumulated } : m)
+      );
+    } finally {
+      setMessages(prev =>
+        prev.map(m => m.id === assistantId ? { ...m, content: accumulated, streaming: false } : m)
+      );
+      setIsGenerating(false);
+      inputRef.current?.focus();
+    }
+  }, [input, isGenerating]);
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
   };
 
-  // ──────────────────────────────────────────────────────────────────────────────
-  // Main Render
-  // ──────────────────────────────────────────────────────────────────────────────
+  if (modelState.status !== 'ready') {
+    return <><CoachStyles/><DownloadScreen state={modelState} onStart={handleDownload}/></>;
+  }
+
+  const hasProactiveMessages = messages.some(m => m.type === 'truth-serum' || m.type === 'bill-shock');
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: 'var(--bg)' }}>
-      
-      {/* Header with Model Downloader */}
-      <div style={{ padding: '28px 32px 0', flexShrink: 0 }}>
-        <ModelDownloader />
-      </div>
+    <>
+      <CoachStyles/>
+      <div className="coach-root">
+        <div className="coach-header">
+          <div className="coach-header-left">
+            <div className="coach-status-dot"/>
+            <span className="coach-header-title">FINEX Coach</span>
+          </div>
+          <span className="coach-header-badge">Local AI · 0 KB to Cloud</span>
+        </div>
 
-      {/* Chat Area */}
-      <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-        
-        {/* Empty State */}
-        {msgs.length === 0 ? (
-          <div style={{ 
-            flex: 1, 
-            display: 'flex', 
-            flexDirection: 'column', 
-            alignItems: 'center', 
-            justifyContent: 'center', 
-            padding: '40px 32px', 
-            textAlign: 'center' 
-          }}>
-            {/* AI Icon */}
-            <div style={{
-              width: '80px',
-              height: '80px',
-              borderRadius: '24px',
-              background: 'linear-gradient(135deg, #10B981, #059669)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              marginBottom: '28px',
-              boxShadow: '0 12px 40px rgba(16,185,129,0.35)',
-            }}>
-              <svg 
-                width="36" 
-                height="36" 
-                viewBox="0 0 24 24" 
-                fill="none" 
-                stroke="white" 
-                strokeWidth="2" 
-                strokeLinecap="round" 
-                strokeLinejoin="round"
-              >
-                <path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 1 1 7.072 0l-.548.547A3.374 3.374 0 0 0 14 18.469V19a2 2 0 1 1-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
-              </svg>
-            </div>
-            
-            {/* Title */}
-            <h2 style={{ 
-              fontSize: '24px', 
-              fontWeight: 700, 
-              color: 'var(--text)', 
-              marginBottom: '10px', 
-              letterSpacing: '-0.4px' 
-            }}>
-              Ask me about your finances
-            </h2>
-            
-            {/* Subtitle */}
-            <p style={{ 
-              fontSize: '14px', 
-              color: 'var(--muted)', 
-              maxWidth: '380px', 
-              lineHeight: 1.7, 
-              marginBottom: '36px' 
-            }}>
-              I'll analyze your spending patterns and give you personalized advice
-            </p>
+        {dailyTip && (
+          <div className="coach-tip-banner">
+            <span className="coach-tip-icon">💡</span>
+            <p className="coach-tip-text">{dailyTip}</p>
+          </div>
+        )}
 
-            {/* Suggestions */}
-            {modelReady && (
-              <div style={{ 
-                display: 'grid', 
-                gridTemplateColumns: '1fr 1fr', 
-                gap: '12px', 
-                maxWidth: '580px', 
-                width: '100%' 
-              }}>
-                {SUGGESTIONS.map((suggestion, i) => (
-                  <button 
-                    key={i} 
-                    className="chip" 
-                    onClick={() => ask(suggestion)}
-                    disabled={isLoading}
-                  >
-                    <span className="chip-arrow">→</span>
-                    {suggestion}
+        <div className="coach-messages">
+          {messages.length === 0 && (
+            <div className="coach-empty">
+              <p>Ask me anything about your finances.</p>
+              <div className="coach-suggestions">
+                {[
+                  'Where did I spend the most?',
+                  'How much have I saved?',
+                  'Am I on track this month?',
+                  'What are my upcoming bills?',
+                ].map(s => (
+                  <button key={s} className="coach-suggestion-chip"
+                    onClick={() => { setInput(s); inputRef.current?.focus(); }}>
+                    {s}
                   </button>
                 ))}
               </div>
-            )}
+            </div>
+          )}
 
-            {/* Model not ready message */}
-            {!modelReady && (
-              <p style={{ fontSize: '13px', color: 'var(--muted)', marginTop: '8px' }}>
-                Download a model above to get started
-              </p>
-            )}
-          </div>
-        ) : (
-          /* Message Thread */
-          <div style={{ 
-            flex: 1, 
-            overflowY: 'auto', 
-            padding: '24px 32px', 
-            display: 'flex', 
-            flexDirection: 'column', 
-            gap: '14px' 
-          }}>
-            {msgs.map(renderMessage)}
-            <div ref={bottomRef} />
-          </div>
-        )}
-      </div>
+          {/* Show suggestion chips even when proactive messages are present */}
+          {messages.length > 0 && !hasProactiveMessages && messages.every(m => m.role !== 'user') && (
+            <div className="coach-suggestions" style={{ padding: '0 0 8px' }}>
+              {['Tell me more', 'How to improve?', 'Show my savings'].map(s => (
+                <button key={s} className="coach-suggestion-chip"
+                  onClick={() => { setInput(s); inputRef.current?.focus(); }}>
+                  {s}
+                </button>
+              ))}
+            </div>
+          )}
 
-      {/* Input Bar */}
-      <div className="coach-input-bar">
-        <div style={{ 
-          flex: 1, 
-          display: 'flex', 
-          alignItems: 'center', 
-          background: '#fff', 
-          border: '1px solid #E5E7EB', 
-          borderRadius: '14px', 
-          padding: '4px 6px 4px 18px', 
-          boxShadow: '0 2px 12px rgba(0,0,0,0.06)' 
-        }}>
-          <input
+          {messages.map(m => <ChatBubble key={m.id} message={m}/>)}
+          <div ref={bottomRef}/>
+        </div>
+
+        <div className="coach-input-bar">
+          <textarea
             ref={inputRef}
+            className="coach-input"
+            placeholder="Reply to your coach…"
             value={input}
             onChange={e => setInput(e.target.value)}
-            placeholder={modelReady ? 'Ask about your spending...' : 'Download model to start...'}
             onKeyDown={handleKeyDown}
-            disabled={isLoading || !modelReady}
-            style={{
-              flex: 1,
-              border: 'none',
-              background: 'transparent',
-              padding: '10px 0',
-              fontSize: '14px',
-              color: 'var(--text)',
-              outline: 'none',
-              opacity: modelReady ? 1 : 0.5,
-              width: '100%',
-            }}
+            rows={1}
+            disabled={isGenerating}
           />
-          <button
-            onClick={() => ask()}
-            disabled={isLoading || !input.trim() || !modelReady}
-            style={{
-              width: '40px',
-              height: '40px',
-              borderRadius: '10px',
-              background: !input.trim() || !modelReady ? '#E5E7EB' : 'linear-gradient(135deg, #10B981, #059669)',
-              border: 'none',
-              cursor: (!input.trim() || !modelReady) ? 'not-allowed' : 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              flexShrink: 0,
-              transition: 'all 0.18s',
-            }}
-          >
-            <svg 
-              width="18" 
-              height="18" 
-              viewBox="0 0 24 24" 
-              fill="none" 
-              stroke={!input.trim() || !modelReady ? '#9CA3AF' : '#fff'} 
-              strokeWidth="2.5" 
-              strokeLinecap="round" 
-              strokeLinejoin="round"
-            >
-              <line x1="22" y1="2" x2="11" y2="13"/>
-              <polygon points="22 2 15 22 11 13 2 9 22 2"/>
-            </svg>
+          <button className="coach-send-btn" onClick={sendMessage}
+            disabled={isGenerating || !input.trim()}>
+            {isGenerating
+              ? <span style={{ width:16, height:16, border:'2px solid #000', borderTopColor:'transparent', borderRadius:'50%', display:'inline-block', animation:'spin 0.8s linear infinite' }}/>
+              : <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M18 10L2 2l4 8-4 8 16-8z" fill="currentColor"/></svg>
+            }
           </button>
         </div>
       </div>
+    </>
+  );
+}
 
-      {/* Styles */}
-      <style>{`
-        @keyframes bounce {
-          0%, 100% { transform: translateY(0); opacity: 0.4; }
-          50% { transform: translateY(-5px); opacity: 1; }
-        }
-      `}</style>
-    </div>
+function CoachStyles() {
+  return (
+    <style>{`
+      :root {
+        --accent: #00e5a0; --accent-dim: rgba(0,229,160,0.15);
+        --bg: #0d1117; --surface: #161b22; --surface2: #1e2530;
+        --text: #e6edf3; --text-muted: #7d8590; --border: #30363d;
+        --radius: 14px; --radius-sm: 8px;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+      @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+      .coach-root { display:flex; flex-direction:column; height:100%; min-height:0; background:var(--bg); font-family:'SF Pro Text','Segoe UI',system-ui,sans-serif; color:var(--text); }
+      .coach-header { display:flex; align-items:center; justify-content:space-between; padding:14px 18px; border-bottom:1px solid var(--border); background:var(--surface); flex-shrink:0; }
+      .coach-header-left { display:flex; align-items:center; gap:8px; }
+      .coach-status-dot { width:8px; height:8px; border-radius:50%; background:var(--accent); box-shadow:0 0 6px var(--accent); animation:pulse 2s infinite; }
+      .coach-header-title { font-size:15px; font-weight:600; }
+      .coach-header-badge { font-size:11px; color:var(--accent); background:var(--accent-dim); border:1px solid rgba(0,229,160,0.3); padding:2px 8px; border-radius:20px; }
+
+      .coach-tip-banner { display:flex; align-items:flex-start; gap:10px; margin:12px 16px 0; padding:12px 14px; background:var(--accent-dim); border:1px solid rgba(0,229,160,0.25); border-radius:var(--radius-sm); flex-shrink:0; }
+      .coach-tip-icon { font-size:16px; flex-shrink:0; }
+      .coach-tip-text { font-size:13px; color:var(--text); margin:0; line-height:1.5; }
+
+      .coach-messages { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:12px; min-height:0; }
+      .coach-messages::-webkit-scrollbar { width:4px; }
+      .coach-messages::-webkit-scrollbar-thumb { background:var(--border); border-radius:2px; }
+
+      .coach-empty { display:flex; flex-direction:column; align-items:center; gap:16px; padding:40px 20px; text-align:center; color:var(--text-muted); font-size:14px; }
+      .coach-suggestions { display:flex; flex-wrap:wrap; gap:8px; justify-content:center; }
+      .coach-suggestion-chip { background:var(--surface2); border:1px solid var(--border); color:var(--text); padding:8px 14px; border-radius:20px; font-size:13px; cursor:pointer; transition:all 0.15s; }
+      .coach-suggestion-chip:hover { border-color:var(--accent); color:var(--accent); background:var(--accent-dim); }
+
+      .coach-bubble-wrap { display:flex; align-items:flex-end; gap:8px; }
+      .coach-bubble-wrap.user { flex-direction:row-reverse; }
+      .coach-avatar { width:28px; height:28px; border-radius:50%; background:var(--accent); display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:700; color:#000; flex-shrink:0; }
+      .coach-bubble { max-width:80%; padding:10px 14px; border-radius:var(--radius); font-size:14px; line-height:1.6; white-space:pre-wrap; word-break:break-word; }
+      .coach-bubble.user { background:#1a3a5c; border-bottom-right-radius:4px; }
+      .coach-bubble.assistant { background:var(--surface2); border:1px solid var(--border); border-bottom-left-radius:4px; }
+      .coach-cursor { display:inline-block; width:2px; height:14px; background:var(--accent); margin-left:2px; vertical-align:middle; animation:blink 0.7s infinite; }
+
+      .coach-input-bar { display:flex; align-items:flex-end; gap:10px; padding:12px 16px; border-top:1px solid var(--border); background:var(--surface); flex-shrink:0; }
+      .coach-input { flex:1; background:var(--surface2); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text); padding:10px 14px; font-size:14px; font-family:inherit; resize:none; outline:none; line-height:1.5; max-height:120px; transition:border-color 0.15s; }
+      .coach-input:focus { border-color:var(--accent); }
+      .coach-input::placeholder { color:var(--text-muted); }
+      .coach-send-btn { width:40px; height:40px; border-radius:10px; background:var(--accent); border:none; color:#000; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0; transition:all 0.15s; }
+      .coach-send-btn:hover:not(:disabled) { background:#00ffb3; transform:scale(1.05); }
+      .coach-send-btn:disabled { opacity:0.4; cursor:not-allowed; }
+
+      .coach-download-screen { display:flex; align-items:center; justify-content:center; height:100%; background:var(--bg); padding:24px; font-family:'SF Pro Text','Segoe UI',system-ui,sans-serif; }
+      .coach-download-card { width:100%; max-width:420px; background:var(--surface); border:1px solid var(--border); border-radius:20px; padding:36px 32px; display:flex; flex-direction:column; align-items:center; gap:16px; text-align:center; }
+      .coach-dl-title { font-size:22px; font-weight:700; color:var(--text); margin:0; }
+      .coach-dl-subtitle { font-size:14px; color:var(--text-muted); margin:0; line-height:1.6; }
+      .coach-model-badge { font-size:12px; color:var(--accent); background:var(--accent-dim); border:1px solid rgba(0,229,160,0.3); padding:5px 14px; border-radius:20px; }
+      .coach-dl-button { width:100%; padding:14px; background:var(--accent); border:none; border-radius:var(--radius-sm); color:#000; font-size:15px; font-weight:600; cursor:pointer; margin-top:4px; transition:all 0.2s; }
+      .coach-dl-button:hover { background:#00ffb3; transform:translateY(-1px); }
+      .coach-progress-wrap { width:100%; display:flex; flex-direction:column; gap:8px; }
+      .coach-progress-label { font-size:13px; color:var(--text-muted); }
+      .coach-progress-track { width:100%; height:6px; background:var(--surface2); border-radius:3px; overflow:hidden; }
+      .coach-progress-fill { height:100%; background:var(--accent); border-radius:3px; transition:width 0.3s ease; box-shadow:0 0 8px var(--accent); }
+      .coach-progress-note { font-size:11px; color:var(--text-muted); }
+      .coach-error { display:flex; flex-direction:column; align-items:center; gap:10px; font-size:13px; color:#f85149; background:rgba(248,81,73,0.1); border:1px solid rgba(248,81,73,0.3); border-radius:var(--radius-sm); padding:12px 16px; width:100%; }
+      .coach-retry-btn { background:none; border:1px solid #f85149; color:#f85149; padding:6px 16px; border-radius:6px; cursor:pointer; font-size:13px; }
+      .coach-retry-btn:hover { background:rgba(248,81,73,0.1); }
+    `}</style>
   );
 }
