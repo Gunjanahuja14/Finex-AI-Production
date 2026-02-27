@@ -36,6 +36,7 @@ body {
 .app-shell {
   display: flex;
   min-height: 100vh;
+  overflow: hidden; /* FIX: prevent body-level scroll */
 }
 
 /* ── Sidebar ── */
@@ -191,11 +192,14 @@ body {
 .main-content {
   flex: 1;
   margin-left: var(--sidebar-width);
-  min-height: 100vh;
+  height: 100vh;           /* FIX: was min-height, now fixed height */
+  overflow-y: auto;        /* FIX: scroll happens HERE, not on body */
+  overflow-x: hidden;
   display: flex;
   flex-direction: column;
   transition: margin-left 0.25s ease;
   background: var(--bg);
+  scroll-behavior: smooth; /* FIX: smooth scrolling */
 }
 
 .main-content.sidebar-collapsed { margin-left: var(--sidebar-collapsed); }
@@ -635,229 +639,97 @@ input:focus, select:focus {
     transform: translateX(-100%);
     transition: transform 0.3s ease;
   }
-  
+
   .sidebar.mobile-open {
     transform: translateX(0);
   }
-  
+
   .main-content {
     margin-left: 0 !important;
     padding-top: 60px;
+    height: 100vh;
+    overflow-y: auto;
   }
-  
+
   .mobile-nav-toggle {
     display: flex;
   }
-  
+
   .topbar,
   .page-header-row {
     padding: 20px 20px 0;
   }
-  
+
   .tab-content {
     padding: 16px 20px 20px;
   }
-  
+
   .coach-body {
     padding: 24px 16px;
   }
 }
 
 @media (max-width: 768px) {
-  /* Stat cards - single column */
-  .stat-card {
-    padding: 16px;
-  }
-  
-  .stat-value {
-    font-size: 22px;
-  }
-  
-  /* Page titles */
-  .page-greeting {
-    font-size: 20px;
-  }
-  
-  .page-title-lg {
-    font-size: 22px;
-  }
-  
-  /* Privacy badge */
-  .privacy-badge {
-    font-size: 10px;
-    padding: 5px 10px;
-  }
-  
-  /* Cards */
-  .card {
-    padding: 16px;
-    border-radius: 14px;
-  }
-  
-  /* Form elements */
+  .stat-card { padding: 16px; }
+  .stat-value { font-size: 22px; }
+  .page-greeting { font-size: 20px; }
+  .page-title-lg { font-size: 22px; }
+  .privacy-badge { font-size: 10px; padding: 5px 10px; }
+  .card { padding: 16px; border-radius: 14px; }
+
   input, select {
     padding: 12px 14px;
-    font-size: 16px; /* Prevent zoom on iOS */
+    font-size: 16px;
   }
-  
-  /* Buttons */
-  .btn {
-    padding: 12px 16px;
-    font-size: 14px;
-    min-height: 44px;
-  }
-  
-  /* Clear banner */
+
+  .btn { padding: 12px 16px; font-size: 14px; min-height: 44px; }
+
   .clear-banner {
     margin: 12px 16px 0;
     padding: 12px 14px;
     flex-direction: column;
     align-items: flex-start;
   }
-  
-  /* Transaction rows */
-  .txn-row {
-    padding: 12px 14px;
-    flex-wrap: wrap;
-  }
-  
-  .txn-icon {
-    width: 40px;
-    height: 40px;
-    font-size: 18px;
-  }
-  
-  /* Coach input bar */
-  .coach-input-bar {
-    padding: 12px 16px;
-    flex-wrap: wrap;
-  }
-  
-  .coach-input-bar > div {
-    border-radius: 10px !important;
-    padding: 4px 6px 4px 14px !important;
-  }
-  
-  .coach-input-bar button {
-    width: 44px !important;
-    height: 44px !important;
-  }
-  
-  /* Bill banner */
-  .bill-banner {
-    flex-direction: column;
-    text-align: center;
-    gap: 16px;
-    padding: 20px;
-  }
-  
-  .bill-banner > div:last-child {
-    text-align: center !important;
-  }
+
+  .txn-row { padding: 12px 14px; flex-wrap: wrap; }
+  .txn-icon { width: 40px; height: 40px; font-size: 18px; }
+
+  .coach-input-bar { padding: 12px 16px; flex-wrap: wrap; }
+  .coach-input-bar > div { border-radius: 10px !important; padding: 4px 6px 4px 14px !important; }
+  .coach-input-bar button { width: 44px !important; height: 44px !important; }
+
+  .bill-banner { flex-direction: column; text-align: center; gap: 16px; padding: 20px; }
+  .bill-banner > div:last-child { text-align: center !important; }
 }
 
-/* Tablet specific */
 @media (min-width: 769px) and (max-width: 1024px) {
-  /* 2 column grids */
-  .stat-card {
-    padding: 18px;
-  }
-  
-  .tab-content {
-    padding: 20px 24px 24px;
-  }
+  .stat-card { padding: 18px; }
+  .tab-content { padding: 20px 24px 24px; }
 }
 
-/* Responsive helpers */
 @media (max-width: 640px) {
-  .hide-mobile {
-    display: none !important;
-  }
-  
-  .full-width-mobile {
-    width: 100% !important;
-  }
-  
-  .text-center-mobile {
-    text-align: center !important;
-  }
-  
-  /* Stack flex containers on mobile */
-  .flex-stack-mobile {
-    flex-direction: column !important;
-  }
-  
-  /* Dashboard stats */
-  .dashboard-stats {
-    grid-template-columns: 1fr !important;
-  }
-  
-  /* Spending + Category side by side */
-  .spending-category-grid {
-    grid-template-columns: 1fr !important;
-  }
-  
-  /* Chat messages */
-  .chat-message {
-    max-width: 90% !important;
-  }
-  
-  /* Form grid */
-  .form-grid {
-    grid-template-columns: 1fr !important;
-  }
-  
-  /* Filter row */
-  .filter-row {
-    flex-direction: column !important;
-    gap: 10px !important;
-  }
-  
-  .filter-row select {
-    width: 100% !important;
-  }
-  
-  /* Health ring section */
-  .health-section {
-    flex-direction: column !important;
-    align-items: center !important;
-    text-align: center !important;
-  }
-  
-  .health-section > div:last-child {
-    margin-top: 16px !important;
-  }
+  .hide-mobile { display: none !important; }
+  .full-width-mobile { width: 100% !important; }
+  .text-center-mobile { text-align: center !important; }
+  .flex-stack-mobile { flex-direction: column !important; }
+  .dashboard-stats { grid-template-columns: 1fr !important; }
+  .spending-category-grid { grid-template-columns: 1fr !important; }
+  .chat-message { max-width: 90% !important; }
+  .form-grid { grid-template-columns: 1fr !important; }
+  .filter-row { flex-direction: column !important; gap: 10px !important; }
+  .filter-row select { width: 100% !important; }
+  .health-section { flex-direction: column !important; align-items: center !important; text-align: center !important; }
+  .health-section > div:last-child { margin-top: 16px !important; }
 }
 
-/* Touch-friendly tap targets */
 @media (pointer: coarse) {
-  button,
-  .sidebar-item,
-  .chip,
-  .icon-btn {
-    min-height: 44px;
-    min-width: 44px;
-  }
-  
-  input, select {
-    min-height: 44px;
-  }
-  
-  /* Larger touch targets for mobile */
-  .txn-row button {
-    width: 40px !important;
-    height: 40px !important;
-  }
+  button, .sidebar-item, .chip, .icon-btn { min-height: 44px; min-width: 44px; }
+  input, select { min-height: 44px; }
+  .txn-row button { width: 40px !important; height: 40px !important; }
 }
 
-/* Prevent horizontal scroll */
-html, body {
-  overflow-x: hidden;
-}
+html, body { overflow-x: hidden; }
 
-/* Smooth scrolling */
 @media (prefers-reduced-motion: no-preference) {
-  html {
-    scroll-behavior: smooth;
-  }
+  html { scroll-behavior: smooth; }
 }

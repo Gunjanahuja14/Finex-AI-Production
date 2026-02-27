@@ -5,8 +5,9 @@ import DashboardTab from './components/DashboardTab';
 import ExpenseTab from './components/ExpenseTab';
 import CoachTab from './components/CoachTab';
 import BillsTab from './components/BillsTab';
+import InsightsTab from './components/InsightsTab';
 
-type Tab = 'dashboard' | 'expense' | 'coach' | 'bills';
+type Tab = 'dashboard' | 'expense' | 'coach' | 'bills' | 'insights';
 
 const TABS: { id: Tab; label: string; sub: string; icon: React.ReactNode }[] = [
   {
@@ -43,6 +44,14 @@ const TABS: { id: Tab; label: string; sub: string; icon: React.ReactNode }[] = [
       </svg>
     ),
   },
+  {
+    id: 'insights', label: 'Insights', sub: 'Analytics',
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+      </svg>
+    ),
+  },
 ];
 
 function getGreeting() {
@@ -64,6 +73,7 @@ export function App() {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const sidebarRef = useRef<HTMLElement>(null);
+  const mainRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     Promise.all([initSDK(), db.initialize()])
@@ -83,6 +93,13 @@ export function App() {
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [mobileMenuOpen]);
+
+  // Scroll to top on tab change
+  useEffect(() => {
+    if (mainRef.current) {
+      mainRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  }, [tab]);
 
   const handleTabChange = (newTab: Tab) => {
     setTab(newTab);
@@ -141,7 +158,6 @@ export function App() {
         ref={sidebarRef}
         className={`sidebar ${collapsed ? 'collapsed' : ''} ${mobileMenuOpen ? 'mobile-open' : ''}`}
       >
-
         {/* Logo */}
         <div className="sidebar-logo">
           <div className="logo-icon" style={{ background: 'transparent', padding: 0, borderRadius: '10px', overflow: 'hidden' }}>
@@ -159,12 +175,10 @@ export function App() {
           )}
         </div>
 
-        {/* Nav section label */}
         {!collapsed && (
           <div className="sidebar-section-label">Navigation</div>
         )}
 
-        {/* Nav items */}
         <nav className="sidebar-nav">
           {TABS.map(t => (
             <button
@@ -183,7 +197,6 @@ export function App() {
           ))}
         </nav>
 
-        {/* Collapse btn */}
         <button
           className="sidebar-collapse hide-mobile"
           onClick={() => setCollapsed(!collapsed)}
@@ -199,8 +212,10 @@ export function App() {
       </aside>
 
       {/* ── Main ── */}
-      <main className={`main-content ${collapsed ? 'sidebar-collapsed' : ''} ${isCoach ? 'coach-mode' : ''}`}>
-
+      <main
+        ref={mainRef}
+        className={`main-content ${collapsed ? 'sidebar-collapsed' : ''} ${isCoach ? 'coach-mode' : ''}`}
+      >
         {tab === 'dashboard' && (
           <div className="topbar">
             <div>
@@ -264,11 +279,13 @@ export function App() {
           </div>
         )}
 
-        <div className={`tab-content ${isCoach ? 'tab-coach' : ''}`} key={tab}>
+        {/* NO key={tab} — prevents jarring remount/scroll reset */}
+        <div className={`tab-content ${isCoach ? 'tab-coach' : ''}`}>
           {tab === 'dashboard' && <DashboardTab />}
           {tab === 'expense'   && <ExpenseTab />}
           {tab === 'coach'     && <CoachTab />}
           {tab === 'bills'     && <BillsTab />}
+          {tab === 'insights'  && <InsightsTab />}
         </div>
       </main>
     </div>
