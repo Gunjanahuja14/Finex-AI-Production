@@ -13,6 +13,7 @@
  *   • Adaptive token budget: simple = 80 tokens, complex = 300 tokens
  *   • Savings Architecture: 'Savings' excluded from totalSpent
  *   • Richer keyword coverage for edge cases
+ *   • Budget stored in localStorage — fully user-editable from UI
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
@@ -61,6 +62,22 @@ interface BillShock {
   spendUntilDue?: number;
 }
 
+export interface WeekendVsWeekday {
+  weekendTotal: number;
+  weekdayTotal: number;
+  isHigh: boolean;
+  message: string;
+}
+
+export interface BudgetProgress {
+  category: string;
+  budget: number;
+  spent: number;
+  remaining: number;
+  percentUsed: number;
+  status: 'ok' | 'warning' | 'danger';
+}
+
 export interface GroundTruth {
   totalSpent: number;
   totalSavings: number;
@@ -80,13 +97,76 @@ export interface GroundTruth {
   riskScore: number;
   riskLabel: 'SAFE' | 'CAUTION' | 'DANGER';
   healthLabel: 'Excellent' | 'Good' | 'Needs Work' | 'Critical';
-  lastMonthDailyAverage: number;   // last month's daily spend — used for realistic projections
+  lastMonthDailyAverage: number;
+  weekendVsWeekday: WeekendVsWeekday | null;
+  budgetProgress: BudgetProgress[];
   snapshotDate: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// BUDGET STORAGE — localStorage-backed, fully user-editable
+// ─────────────────────────────────────────────────────────────────────────────
+
+const BUDGET_STORAGE_KEY = 'zenith-budgets';
+
+export const DEFAULT_BUDGETS: Record<string, number> = {
+  Food:          6000,
+  Transport:     3000,
+  Entertainment: 5000,
+  Health:        5000,
+  Shopping:      8000,
+  Utilities:     4000,
+  Education:     5000,
+  Other:         5000,
+};
+
+/** Read user budgets from localStorage, falling back to defaults */
+export function getBudgets(): Record<string, number> {
+  try {
+    const raw = localStorage.getItem(BUDGET_STORAGE_KEY);
+    if (!raw) return { ...DEFAULT_BUDGETS };
+    const stored = JSON.parse(raw) as Record<string, number>;
+    // Merge: stored values take priority, add any missing defaults
+    return { ...DEFAULT_BUDGETS, ...stored };
+  } catch {
+    return { ...DEFAULT_BUDGETS };
+  }
+}
+
+/** Persist a single category budget */
+export function setBudget(category: string, amount: number): void {
+  const current = getBudgets();
+  current[category] = amount;
+  localStorage.setItem(BUDGET_STORAGE_KEY, JSON.stringify(current));
+}
+
+/** Persist all budgets at once */
+export function setAllBudgets(budgets: Record<string, number>): void {
+  localStorage.setItem(BUDGET_STORAGE_KEY, JSON.stringify(budgets));
+}
+
+/** Reset all budgets to factory defaults */
+export function resetBudgets(): void {
+  localStorage.removeItem(BUDGET_STORAGE_KEY);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7-DAY SPENDING TYPE
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface DailySpending {
+  date: string;
+  /** Short day label: Mon, Tue, Wed, Thu, Fri, Sat, Sun */
+  label: string;
+  /** Kept for backward compat — same as label */
+  dayLabel: string;
+  amount: number;
+  /** Per-category totals for that day */
+  categories: Record<string, number>;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // QUESTION COMPLEXITY CLASSIFIER
-// Determines whether to use simple keyword response or deep reasoning path
 // ─────────────────────────────────────────────────────────────────────────────
 
 type QuestionComplexity = 'simple' | 'complex' | 'affordability';
@@ -94,7 +174,6 @@ type QuestionComplexity = 'simple' | 'complex' | 'affordability';
 function classifyQuestion(q: string): QuestionComplexity {
   const lower = q.toLowerCase();
 
-  // Affordability questions: "can I buy X?", "afford X", "purchase X worth Y"
   const affordabilityPatterns = [
     /can i (buy|afford|get|purchase|order)/,
     /should i (buy|afford|get|purchase|order)/,
@@ -106,7 +185,6 @@ function classifyQuestion(q: string): QuestionComplexity {
   ];
   if (affordabilityPatterns.some(p => p.test(lower))) return 'affordability';
 
-  // Complex multi-step questions
   const complexPatterns = [
     /how (long|many months|many days) (will|until|to)/,
     /when (can|will|should) i/,
@@ -131,28 +209,23 @@ function classifyQuestion(q: string): QuestionComplexity {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AMOUNT EXTRACTOR
-// Pulls rupee amounts from natural language: "50000", "50,000", "50k", "1 lakh"
 // ─────────────────────────────────────────────────────────────────────────────
 
 function extractAmount(text: string): number | null {
   const lower = text.toLowerCase().replace(/,/g, '');
 
-  // Lakh patterns: "1.5 lakh", "2 lakh", "one lakh"
   const lakhMatch = lower.match(/(\d+(?:\.\d+)?)\s*lakh/);
   if (lakhMatch) return parseFloat(lakhMatch[1]) * 100000;
 
-  // k patterns: "50k", "1.5k"
   const kMatch = lower.match(/(\d+(?:\.\d+)?)\s*k\b/);
   if (kMatch) return parseFloat(kMatch[1]) * 1000;
 
-  // Rupee sign patterns: "₹50000", "rs 50000", "inr 50000"
   const rupeeMatch = lower.match(/(?:₹|rs\.?\s*|inr\s*)(\d+(?:\.\d+)?)/);
   if (rupeeMatch) return parseFloat(rupeeMatch[1]);
 
-  // Plain large number: extract biggest number in the string
   const numbers = lower.match(/\d+(?:\.\d+)?/g);
   if (numbers) {
-    const vals = numbers.map(Number).filter(n => n >= 100); // ignore tiny numbers
+    const vals = numbers.map(Number).filter(n => n >= 100);
     if (vals.length > 0) return Math.max(...vals);
   }
 
@@ -186,7 +259,71 @@ function getDaysInMonth(date: Date): number {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FINANCE ENGINE
+// WEEKEND vs WEEKDAY ANALYSIS
+// ─────────────────────────────────────────────────────────────────────────────
+
+function computeWeekendVsWeekday(sevenDayData: DailySpending[]): WeekendVsWeekday {
+  let weekendTotal = 0;
+  let weekdayTotal = 0;
+  let weekendDays  = 0;
+  let weekdayDays  = 0;
+
+  for (const d of sevenDayData) {
+    const dayOfWeek = new Date(d.date).getDay(); // 0 = Sun, 6 = Sat
+    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+    if (isWeekend) {
+      weekendTotal += d.amount;
+      weekendDays++;
+    } else {
+      weekdayTotal += d.amount;
+      weekdayDays++;
+    }
+  }
+
+  const avgWeekend = weekendDays > 0 ? weekendTotal / weekendDays : 0;
+  const avgWeekday = weekdayDays > 0 ? weekdayTotal / weekdayDays : 0;
+  const isHigh     = avgWeekend > avgWeekday * 1.5 && weekendTotal > 500;
+
+  let message = '';
+  if (isHigh) {
+    const pct = avgWeekday > 0
+      ? Math.round(((avgWeekend - avgWeekday) / avgWeekday) * 100)
+      : 0;
+    message = `Your weekend spending (₹${weekendTotal.toLocaleString('en-IN')}) is ${pct}% higher per day than weekdays. Weekend treats adding up — worth watching!`;
+  } else if (weekendTotal > 0 || weekdayTotal > 0) {
+    message = `Weekend spending (₹${weekendTotal.toLocaleString('en-IN')}) is in line with your weekday pace. Good balance!`;
+  }
+
+  return { weekendTotal, weekdayTotal, isHigh, message };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BUDGET PROGRESS — reads from localStorage budgets
+// ─────────────────────────────────────────────────────────────────────────────
+
+function computeBudgetProgress(
+  categoryBreakdown: Record<string, CategoryStat>
+): BudgetProgress[] {
+  const budgets = getBudgets();
+  return Object.entries(categoryBreakdown)
+    .filter(([cat]) => cat !== 'Savings' && budgets[cat] !== undefined)
+    .map(([category, stat]) => {
+      const budget      = budgets[category];
+      const spent       = stat.total;
+      const remaining   = budget - spent;
+      const percentUsed = Math.round((spent / budget) * 100);
+      const status: BudgetProgress['status'] =
+        percentUsed >= 100 ? 'danger' :
+        percentUsed >= 80  ? 'warning' :
+        'ok';
+      return { category, budget, spent, remaining, percentUsed, status };
+    })
+    .filter(b => b.spent > 0)
+    .sort((a, b) => b.percentUsed - a.percentUsed);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FINANCE ENGINE — buildGroundTruth
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function buildGroundTruth(): Promise<GroundTruth> {
@@ -215,7 +352,7 @@ export async function buildGroundTruth(): Promise<GroundTruth> {
   const totalActivity = totalSpent + totalSavings;
   const savingsRate   = totalActivity > 0 ? (totalSavings / totalActivity) * 100 : 0;
 
-  // Last month savings growth
+  // Last month
   const lastMonthNum  = now.getMonth() === 0 ? 11 : now.getMonth() - 1;
   const lastMonthYear = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
   const lastMonthTx = allTx.filter((t) => {
@@ -231,7 +368,7 @@ export async function buildGroundTruth(): Promise<GroundTruth> {
   const daysInLastMonth = new Date(lastMonthYear, lastMonthNum + 1, 0).getDate();
   const lastMonthDailyAverage = lastMonthSpent > 0
     ? lastMonthSpent / daysInLastMonth
-    : dailyAverage; // fallback to current month if no history
+    : dailyAverage;
 
   const savingsGrowthPct =
     lastMonthSavings > 0
@@ -338,6 +475,13 @@ export async function buildGroundTruth(): Promise<GroundTruth> {
     `Was that ₹${a.amount.toFixed(0)} ${a.description} an emergency or a 'sad-purchase'? It's ${a.deviationPercent}% above your normal ${a.category} spend. Want to adjust next week's budget?`
   );
 
+  // Compute 7-day data for weekendVsWeekday
+  const sevenDayData = await get7DaySpending();
+  const weekendVsWeekday = computeWeekendVsWeekday(sevenDayData);
+
+  // Budget progress — uses localStorage budgets
+  const budgetProgress = computeBudgetProgress(categoryBreakdown);
+
   return {
     totalSpent, totalSavings, savingsGrowthPct, savingsRate,
     totalIncome, currentBalance: userBalance ?? 0, dailyAverage,
@@ -348,13 +492,14 @@ export async function buildGroundTruth(): Promise<GroundTruth> {
     truthSerumMessages,
     userBalance,
     lastMonthDailyAverage,
+    weekendVsWeekday,
+    budgetProgress,
     snapshotDate: now.toISOString(),
   };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AFFORDABILITY ENGINE
-// Multi-step calculator for "can I buy X?" questions
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function computeAffordability(question: string): Promise<string> {
@@ -363,7 +508,6 @@ async function computeAffordability(question: string): Promise<string> {
   const manualBills = getManualBills();
   const totalMonthlyBills = manualBills.reduce((s, b) => s + toMonthly(b.amount, b.cycle), 0);
 
-  // If we can't extract an amount, give a balance-based general answer
   if (itemAmount === null) {
     if (truth.userBalance === null) {
       return `To check if you can afford something, I need your current balance. Tap the balance icon on the dashboard to set it. Then ask me again — I'll do the full math for you! 💡`;
@@ -375,37 +519,25 @@ async function computeAffordability(question: string): Promise<string> {
     return `Based on your balance of ₹${truth.userBalance.toFixed(0)}: you'll likely spend ~₹${projectedSpendRemaining.toFixed(0)} more this month + ₹${projectedBillsRemaining.toFixed(0)} in bills. That leaves you ~₹${safeToSpend.toFixed(0)} safely. Tell me the price and I'll give you a precise yes/no!`;
   }
 
-  // ── Full affordability calculation ────────────────────────────────────────
   const balance = truth.userBalance;
-
-  // Step 1: Project remaining spend using last month's daily average (more realistic)
-  // Falls back to current month if no last month data exists
   const dailyRate = truth.lastMonthDailyAverage > 0
     ? truth.lastMonthDailyAverage
     : truth.dailyAverage;
   const projectedRemainingSpend = dailyRate * truth.daysRemainingInMonth;
-
-  // Step 2: Upcoming bills
   const upcomingBillsTotal = truth.billShocks.reduce((s, b) => s + b.amount, 0);
-
-  // Step 3: Calculate what's left after commitments
   const committedOutgo = projectedRemainingSpend + upcomingBillsTotal;
-  const balanceAfterCommitments = balance !== null ? balance - committedOutgo : null;
   const canAffordNow = balance !== null ? (balance - committedOutgo - itemAmount) >= 0 : null;
 
-  // Step 4: How many months to save for it (if can't afford now)
   const monthlySavingsCapacity = truth.totalSavings > 0
     ? truth.totalSavings
-    : Math.max(0, (balance ?? 0) - projectedRemainingSpend - upcomingBillsTotal) * 0.3; // estimate 30% of leftover
+    : Math.max(0, (balance ?? 0) - projectedRemainingSpend - upcomingBillsTotal) * 0.3;
   const monthsNeeded = monthlySavingsCapacity > 0
     ? Math.ceil(itemAmount / monthlySavingsCapacity)
     : null;
 
-  // ── Build response ────────────────────────────────────────────────────────
   const itemLabel = `₹${itemAmount.toLocaleString('en-IN')} purchase`;
 
   if (balance === null) {
-    // No balance set — use income/spend data only
     const netMonthly = truth.totalSavings;
     if (netMonthly >= itemAmount) {
       return `💡 You're saving ₹${netMonthly.toFixed(0)}/month, which covers this ${itemLabel} in one go — looks doable! But set your balance in the dashboard for a precise answer. 🎯`;
@@ -416,30 +548,44 @@ async function computeAffordability(question: string): Promise<string> {
     }
   }
 
-  // Full calculation with balance
   const remaining = balance - committedOutgo - itemAmount;
   const verdict   = canAffordNow ? '✅ Yes, you can afford it' : '⚠️ Not comfortably right now';
 
-  let response = `${verdict} — here's the math:\n\n`;
-  response += `Balance:                  ₹${balance.toLocaleString('en-IN')}\n`;
-  response += `Est. spend remaining:    −₹${projectedRemainingSpend.toFixed(0)} (last month's pace)\n`;
+  let response = `${verdict} — here's the math:
+
+`;
+  response += `Balance:                  ₹${balance.toLocaleString('en-IN')}
+`;
+  response += `Est. spend remaining:    −₹${projectedRemainingSpend.toFixed(0)} (last month's pace)
+`;
   if (upcomingBillsTotal > 0) {
-    response += `Upcoming bills:          −₹${upcomingBillsTotal.toFixed(0)}\n`;
+    response += `Upcoming bills:          −₹${upcomingBillsTotal.toFixed(0)}
+`;
   }
-  response += `This ${itemLabel}:  −₹${itemAmount.toLocaleString('en-IN')}\n`;
-  response += `──────────────────────────\n`;
+  response += `This ${itemLabel}:  −₹${itemAmount.toLocaleString('en-IN')}
+`;
+  response += `──────────────────────────
+`;
   response += `Left after:               ₹${remaining.toFixed(0)}`;
 
   if (canAffordNow && remaining < 2000) {
-    response += `\n\n⚡ That's cutting it close though. Make sure you have an emergency buffer.`;
+    response += `
+
+⚡ That's cutting it close though. Make sure you have an emergency buffer.`;
   } else if (!canAffordNow) {
     if (monthsNeeded !== null && monthsNeeded <= 6) {
-      response += `\n\n📅 At your savings rate (₹${truth.totalSavings.toFixed(0)}/mo), you can have this in ${monthsNeeded} month${monthsNeeded > 1 ? 's' : ''}. Worth the wait?`;
+      response += `
+
+📅 At your savings rate (₹${truth.totalSavings.toFixed(0)}/mo), you can have this in ${monthsNeeded} month${monthsNeeded > 1 ? 's' : ''}. Worth the wait?`;
     } else {
-      response += `\n\n💡 Consider waiting till next month or splitting the cost if possible.`;
+      response += `
+
+💡 Consider waiting till next month or splitting the cost if possible.`;
     }
   } else {
-    response += `\n\n🎯 Go for it — just log it as a transaction to stay on track!`;
+    response += `
+
+🎯 Go for it — just log it as a transaction to stay on track!`;
   }
 
   return response;
@@ -530,7 +676,7 @@ RULES:
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// COMPUTE ANSWER — deterministic keyword matching, zero LLM needed
+// COMPUTE ANSWER — deterministic keyword matching
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function computeAnswer(question: string): Promise<string> {
@@ -539,7 +685,6 @@ async function computeAnswer(question: string): Promise<string> {
   const autoDetected = snap.recurring;
   const q            = question.toLowerCase();
 
-  // ── Savings questions ────────────────────────────────────────────────────
   if (
     q.includes('how much have i saved') || q.includes('total savings') ||
     q.includes('savings rate') || q.includes('is my savings') ||
@@ -562,7 +707,6 @@ async function computeAnswer(question: string): Promise<string> {
     return `💰 You've saved ₹${truth.totalSavings.toFixed(0)} this month — ${truth.savingsRate.toFixed(1)}% of all financial activity. ${growthStr} ${rateAssessment}`;
   }
 
-  // ── Subscriptions / Bills ────────────────────────────────────────────────
   if (
     q.includes('subscri') || q.includes('bill') || q.includes('netflix') ||
     q.includes('spotify') || q.includes('hotstar') || q.includes('gym') ||
@@ -579,7 +723,6 @@ async function computeAnswer(question: string): Promise<string> {
     return `You have ${allBills.length} bill${allBills.length > 1 ? 's' : ''} tracked: ${allBills.join('; ')}. Total monthly: ₹${totalMonthly.toFixed(0)}.`;
   }
 
-  // ── Recurring ────────────────────────────────────────────────────────────
   if (q.includes('recurring') || q.includes('repeat') || q.includes('regular')) {
     const all = [
       ...manualBills.map((b) => `${b.name} (₹${b.amount}/${b.cycle})`),
@@ -589,7 +732,6 @@ async function computeAnswer(question: string): Promise<string> {
     return `Your recurring expenses: ${all.join(', ')}.`;
   }
 
-  // ── Anomaly / Unusual ────────────────────────────────────────────────────
   if (q.includes('unusual') || q.includes('anomal') || q.includes('spike') || q.includes('weird')) {
     const truth = await buildGroundTruth();
     if (truth.anomalies.length === 0) return "No unusual spending detected this month. You're consistent!";
@@ -599,7 +741,6 @@ async function computeAnswer(question: string): Promise<string> {
     return `⚠️ Unusual spending detected: ${list}.`;
   }
 
-  // ── Financial Health / Risk ───────────────────────────────────────────────
   if (
     q.includes('risk') || q.includes('status') || q.includes('how am i doing') ||
     q.includes('financial health') || q.includes('health score') ||
@@ -609,7 +750,6 @@ async function computeAnswer(question: string): Promise<string> {
     return `Financial health: ${truth.healthLabel} (risk ${truth.riskScore}/100 — ${truth.riskLabel}). Spent ₹${truth.totalSpent.toFixed(0)}, saved ₹${truth.totalSavings.toFixed(0)} (${truth.savingsRate.toFixed(1)}% allocation). Projected month total: ₹${truth.projectedMonthlySpend.toFixed(0)}.`;
   }
 
-  // ── Balance ───────────────────────────────────────────────────────────────
   if (q.includes('balance') || q.includes('how much do i have') || q.includes('how much money')) {
     const truth = await buildGroundTruth();
     if (truth.userBalance === null) {
@@ -618,23 +758,65 @@ async function computeAnswer(question: string): Promise<string> {
     return `Your current balance is ₹${truth.userBalance.toLocaleString('en-IN')}. At your spending pace (₹${truth.dailyAverage.toFixed(0)}/day), you have ~${Math.floor(truth.userBalance / (truth.dailyAverage || 1))} days of runway.`;
   }
 
-  // ── Category-specific ────────────────────────────────────────────────────
   const categoryMap: Record<string, string[]> = {
     health:        ['health', 'medicine', 'medical', 'pharmacy', 'doctor', 'hospital'],
     food:          ['food', 'eat', 'restaurant', 'pizza', 'lunch', 'dinner', 'breakfast', 'swiggy', 'zomato', 'cafe', 'coffee'],
     shopping:      ['shop', 'nykaa', 'amazon', 'flipkart', 'buy', 'purchase', 'clothes', 'meesho', 'myntra'],
     entertainment: ['entertainment', 'fun', 'movie', 'gaming', 'outing', 'party'],
     transport:     ['transport', 'uber', 'ola', 'travel', 'fuel', 'petrol', 'cab', 'auto', 'rapido'],
+    utilities:     ['utilities', 'electricity', 'internet', 'recharge', 'jio', 'wifi', 'water'],
+    education:     ['education', 'course', 'udemy', 'book', 'study', 'learning', 'class'],
+    other:         ['miscellaneous'],
   };
-  for (const [cat, keywords] of Object.entries(categoryMap)) {
+  for (const [catKey, keywords] of Object.entries(categoryMap)) {
     if (keywords.some((kw) => q.includes(kw))) {
-      const found = snap.categories.find((c) => c.category.toLowerCase() === cat);
-      if (!found) return `No ${cat} expenses recorded this month.`;
-      return `You spent ₹${found.amount} on ${found.category} (${found.count} transaction${found.count > 1 ? 's' : ''}) this month.`;
+      const catName = catKey.charAt(0).toUpperCase() + catKey.slice(1);
+      const found = snap.categories.find((c) => c.category.toLowerCase() === catKey);
+      const userBudgets = getBudgets();
+      const budget = userBudgets[catName];
+      const spent = found?.amount ?? 0;
+
+      let base = found
+        ? `You spent ₹${spent.toLocaleString('en-IN')} on ${catName} (${found.count} transaction${found.count > 1 ? 's' : ''}) this month.`
+        : `No ${catName} expenses recorded this month.`;
+
+      if (budget) {
+        const remaining = budget - spent;
+        const pct = Math.round((spent / budget) * 100);
+        const status =
+          pct >= 100 ? `🔴 Over budget by ₹${Math.abs(remaining).toLocaleString('en-IN')}! Consider pausing ${catName} spending.` :
+          pct >= 80  ? `🟡 ${pct}% of budget used — only ₹${remaining.toLocaleString('en-IN')} left this month.` :
+          pct >= 50  ? `🟠 ${pct}% of budget used — ₹${remaining.toLocaleString('en-IN')} remaining.` :
+                       `✅ ${pct}% of budget used — ₹${remaining.toLocaleString('en-IN')} still available.`;
+        base += ` Your ${catName} budget is ₹${budget.toLocaleString('en-IN')}. ${status}`;
+      } else {
+        base += ` 💡 Tip: Set a budget for ${catName} in the Insights tab to track your limit.`;
+      }
+      return base;
     }
   }
 
-  // ── Total / Overview ─────────────────────────────────────────────────────
+  // Handle "what is my budget" / "budget for X" questions directly
+  if (q.includes('budget')) {
+    const userBudgets = getBudgets();
+    const truth = await buildGroundTruth();
+    const budgetLines = Object.entries(userBudgets)
+      .map(([cat, bud]) => {
+        const spent = truth.categoryBreakdown[cat]?.total ?? 0;
+        const pct = Math.round((spent / bud) * 100);
+        const indicator = pct >= 100 ? '🔴' : pct >= 80 ? '🟡' : '✅';
+        return `${indicator} ${cat}: ₹${spent.toLocaleString('en-IN')} / ₹${bud.toLocaleString('en-IN')} (${pct}%)`;
+      })
+      .join('\n');
+    const totalBudget = Object.values(userBudgets).reduce((s, v) => s + v, 0);
+    const totalSpent = Object.entries(userBudgets).reduce((s, [cat]) => s + (truth.categoryBreakdown[cat]?.total ?? 0), 0);
+    return `📊 Your monthly budgets:
+
+${budgetLines}
+
+Total: ₹${totalSpent.toLocaleString('en-IN')} spent of ₹${totalBudget.toLocaleString('en-IN')} budget. Edit limits anytime in the Insights tab → 🎯 Monthly Budgets.`;
+  }
+
   if (
     q.includes('total') || q.includes('how much') || q.includes('spent') ||
     q.includes('spend') || q.includes('where') || q.includes('overview') ||
@@ -647,14 +829,12 @@ async function computeAnswer(question: string): Promise<string> {
     return `You spent ₹${snap.monthlyTotal} this month across ${snap.last30Days.count} transactions. Breakdown — ${catSummary}.${savingsStr}`;
   }
 
-  // ── Cut / Reduce ─────────────────────────────────────────────────────────
   if (q.includes('cut') || q.includes('reduce') || q.includes('where can i save') || q.includes('save more')) {
     const top   = snap.categories[0];
     const truth = await buildGroundTruth();
     return `Biggest expense: ${top?.category ?? 'N/A'} at ₹${top?.amount ?? 0}. You're saving ₹${truth.totalSavings.toFixed(0)}/mo (${truth.savingsRate.toFixed(1)}% rate). Trimming ${top?.category ?? 'that'} could boost your savings further.`;
   }
 
-  // ── Saving tips ───────────────────────────────────────────────────────────
   if (
     q.includes('saving tip') || q.includes('tips') || q.includes('advice') ||
     q.includes('suggest') || q.includes('improve') || q.includes('recommend')
@@ -670,20 +850,28 @@ async function computeAnswer(question: string): Promise<string> {
     if (truth.anomalies.length > 0) tips.push(`Watch out for unusual spends — you had ${truth.anomalies.length} anomaly this month`);
     tips.push(`Track every transaction — visibility is the first step to control`);
 
-    return `Hey champ! You're crushing it already by hitting ${truth.savingsRate.toFixed(1)}% savings allocation — that's serious financial power! To keep this momentum going, try automating your transfers to the "savings" account each payday so you don't even have to think about it.\n\n**Actionable Tips:**\n${tips.slice(0, 3).map((t, i) => `${i + 1}. ${t}`).join('\n')} 🚀`;
+    return `Hey champ! You're crushing it already by hitting ${truth.savingsRate.toFixed(1)}% savings allocation — that's serious financial power! To keep this momentum going, try automating your transfers to the "savings" account each payday so you don't even have to think about it.
+
+**Actionable Tips:**
+${tips.slice(0, 3).map((t, i) => `${i + 1}. ${t}`).join('\n')} 🚀`;
   }
 
-  return ''; // → fall through to LLM
+  return '';
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// LLM FALLBACK — with adaptive token budget
+// LLM FALLBACK
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function buildFallbackPrompt(userMessage: string, isComplex: boolean): Promise<string> {
   const truth        = await buildGroundTruth();
   const systemPrompt = buildSystemPrompt(truth, isComplex);
-  return `<start_of_turn>user\n${systemPrompt}\n\nUser question: ${userMessage}<end_of_turn>\n<start_of_turn>model\n`;
+  return `<start_of_turn>user
+${systemPrompt}
+
+User question: ${userMessage}<end_of_turn>
+<start_of_turn>model
+`;
 }
 
 function cleanOutput(text: string): string {
@@ -728,16 +916,13 @@ export async function askCoach(
 
   const complexity = classifyQuestion(message);
 
-  // ── Affordability: fully deterministic, no LLM needed ────────────────────
   if (complexity === 'affordability') {
     return computeAffordability(message);
   }
 
-  // ── Try deterministic keyword answer first ────────────────────────────────
   const computed = await computeAnswer(message);
   if (computed) return computed;
 
-  // ── LLM fallback with adaptive token budget ───────────────────────────────
   const isComplex     = complexity === 'complex';
   const maxTokens     = isComplex ? 300 : 100;
   const prompt        = await buildFallbackPrompt(message, isComplex);
@@ -750,7 +935,6 @@ export async function askCoach(
   return cleanOutput(raw);
 }
 
-/** Full snapshot for Dashboard/CoachTab rendering — no LLM needed */
 export async function getFinancialSnapshot(): Promise<GroundTruth> {
   return buildGroundTruth();
 }
@@ -785,40 +969,45 @@ export async function getDailyTip(): Promise<string> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 7-DAY SPENDING DATA
-// Returns daily spending for the past 7 days
+// 7-DAY SPENDING DATA — fully connected to real transactions
 // ─────────────────────────────────────────────────────────────────────────────
 
-export interface DailySpending {
-  date: string;
-  dayLabel: string;
-  amount: number;
-}
-
 export async function get7DaySpending(): Promise<DailySpending[]> {
-  const now = new Date();
+  const now      = new Date();
   const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-  const result: DailySpending[] = [];
 
+  const result: DailySpending[] = [];
   for (let i = 6; i >= 0; i--) {
-    const date = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
+    const date    = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
     const dateStr = date.toISOString().split('T')[0];
-    const dayLabel = dayNames[date.getDay()];
-    
+    const label   = dayNames[date.getDay()];
     result.push({
-      date: dateStr,
-      dayLabel,
-      amount: 0,
+      date:       dateStr,
+      label,
+      dayLabel:   label,
+      amount:     0,
+      categories: {},
     });
   }
 
   const allTx = await db.getAll();
-  
+
   for (const t of allTx) {
-    const txDate = new Date(t.date).toISOString().split('T')[0];
+    const txDate  = new Date(t.date).toISOString().split('T')[0];
     const dayData = result.find(d => d.date === txDate);
-    if (dayData && t.category !== 'Savings') {
-      dayData.amount += t.amount;
+    if (!dayData) continue;
+    if (t.category === 'Savings') continue;
+
+    dayData.amount += t.amount;
+
+    const cat = t.category ?? 'Other';
+    dayData.categories[cat] = (dayData.categories[cat] ?? 0) + t.amount;
+  }
+
+  for (const d of result) {
+    d.amount = parseFloat(d.amount.toFixed(2));
+    for (const cat in d.categories) {
+      d.categories[cat] = parseFloat(d.categories[cat].toFixed(2));
     }
   }
 
