@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { initAI, askCoach, getDailyTip, getFinancialSnapshot, isAIReady, type AIModelState } from '../services/ai';
 import { voiceService, type VoiceServiceState } from '../services/voice';
-import { visionService, type VisionServiceState } from '../services/vision';
 
 type Message = {
   id: string;
@@ -109,15 +108,6 @@ export default function CoachTab() {
   });
   const [isVoiceReady, setIsVoiceReady] = useState(false);
   
-  // Vision state
-  const [visionState, setVisionState] = useState<VisionServiceState>({
-    isProcessing: false,
-    isReady: false,
-    error: null,
-  });
-  const [isVisionReady, setIsVisionReady] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  
   const bottomRef  = useRef<HTMLDivElement>(null);
   const inputRef   = useRef<HTMLTextAreaElement>(null);
 
@@ -134,21 +124,6 @@ export default function CoachTab() {
     };
     
     initServices();
-  }, []);
-
-  // Initialize vision services
-  useEffect(() => {
-    const initVision = async () => {
-      try {
-        await visionService.init();
-        setIsVisionReady(true);
-        console.log('[CoachTab] Vision service ready');
-      } catch (err) {
-        console.warn('[CoachTab] Vision service init failed:', err);
-      }
-    };
-    
-    initVision();
   }, []);
 
   // Set up voice callbacks
@@ -298,73 +273,6 @@ export default function CoachTab() {
     }
   }, [voiceState.isSpeaking]);
 
-  // Vision input handler - for uploading receipts/images
-  const handleImageUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !isVisionReady) return;
-
-    setVisionState(prev => ({ ...prev, isProcessing: true }));
-
-    try {
-      const result = await visionService.analyzeReceipt(file);
-      
-      // Add user message with image analysis
-      const userMsg: Message = { 
-        id: Date.now().toString(), 
-        role: 'user', 
-        content: `📷 I uploaded an image. Can you help me extract the details?\n\n${result.description}`,
-        type: 'normal' 
-      };
-      setMessages(prev => [...prev, userMsg]);
-      
-      // Send to AI for further processing
-      const assistantId = (Date.now() + 1).toString();
-      const assistantMsg: Message = { 
-        id: assistantId, 
-        role: 'assistant', 
-        content: '', 
-        streaming: true, 
-        type: 'normal' 
-      };
-      setMessages(prev => [...prev, assistantMsg]);
-
-      // Ask AI to process the receipt
-      const prompt = `A user just uploaded a receipt/image. Here's what I can see:\n${result.description}\n\n${result.extractedText ? `Extracted text: ${result.extractedText}` : ''}\n${result.entities?.amount ? `Amount: ₹${result.entities.amount}` : ''}\n${result.entities?.vendor ? `Vendor: ${result.entities.vendor}` : ''}\n${result.entities?.date ? `Date: ${result.entities.date}` : ''}\n\nPlease help them categorize this expense and add it to their records if applicable.`;
-      
-      let accumulated = '';
-      try {
-        const answer = await askCoach(prompt);
-        accumulated = answer;
-        const words = answer.split(' ');
-        let built = '';
-        for (const word of words) {
-          built += (built ? ' ' : '') + word;
-          setMessages(prev =>
-            prev.map(m => m.id === assistantId ? { ...m, content: built } : m)
-          );
-          await new Promise(r => setTimeout(r, 28));
-        }
-      } catch {
-        accumulated = 'I received your image but had trouble analyzing it. Could you try describing the expense?';
-        setMessages(prev =>
-          prev.map(m => m.id === assistantId ? { ...m, content: accumulated } : m)
-        );
-      } finally {
-        setMessages(prev =>
-          prev.map(m => m.id === assistantId ? { ...m, content: accumulated, streaming: false } : m)
-        );
-      }
-    } catch (err) {
-      console.error('Vision analysis error:', err);
-    } finally {
-      setVisionState(prev => ({ ...prev, isProcessing: false }));
-      // Reset file input
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
-    }
-  }, [isVisionReady]);
-
   if (modelState.status !== 'ready') {
     return <><CoachStyles/><DownloadScreen state={modelState} onStart={handleDownload}/></>;
   }
@@ -374,14 +282,6 @@ export default function CoachTab() {
   return (
     <>
       <CoachStyles/>
-      {/* Hidden file input for image upload */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="image/*"
-        onChange={handleImageUpload}
-        style={{ display: 'none' }}
-      />
       
       <div className="coach-root">
         <div className="coach-header">
@@ -394,11 +294,6 @@ export default function CoachTab() {
             {isVoiceReady && (
               <span className="coach-voice-badge" title="Voice Ready">
                 🎤
-              </span>
-            )}
-            {isVisionReady && (
-              <span className="coach-vision-badge" title="Vision Ready">
-                📷
               </span>
             )}
           </div>
@@ -447,24 +342,6 @@ export default function CoachTab() {
         </div>
 
         <div className="coach-input-bar">
-          {/* Image upload button */}
-          <button
-            className="coach-icon-btn"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={!isVisionReady || isGenerating || visionState.isProcessing}
-            title="Upload receipt or image"
-          >
-            {visionState.isProcessing ? (
-              <span style={{ width: 16, height: 16, border: '2px solid var(--accent)', borderTopColor: 'transparent', borderRadius: '50%', display: 'inline-block', animation: 'spin 0.8s linear infinite' }}/>
-            ) : (
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
-                <circle cx="8.5" cy="8.5" r="1.5"/>
-                <polyline points="21 15 16 10 5 21"/>
-              </svg>
-            )}
-          </button>
-          
           {/* Voice input button */}
           <button
             className={`coach-icon-btn ${voiceState.isListening ? 'listening' : ''}`}
@@ -554,7 +431,7 @@ function CoachStyles() {
       .coach-status-dot { width:8px; height:8px; border-radius:50%; background:var(--accent); box-shadow:0 0 6px var(--accent); animation:pulse 2s infinite; }
       .coach-header-title { font-size:15px; font-weight:600; }
       .coach-header-badge { font-size:11px; color:var(--accent); background:var(--accent-dim); border:1px solid rgba(0,229,160,0.3); padding:2px 8px; border-radius:20px; }
-      .coach-voice-badge, .coach-vision-badge { font-size:12px; }
+      .coach-voice-badge { font-size:12px; }
 
       .coach-tip-banner { display:flex; align-items:flex-start; gap:10px; margin:12px 16px 0; padding:12px 14px; background:var(--accent-dim); border:1px solid rgba(0,229,160,0.25); border-radius:var(--radius-sm); flex-shrink:0; }
       .coach-tip-icon { font-size:16px; flex-shrink:0; }
