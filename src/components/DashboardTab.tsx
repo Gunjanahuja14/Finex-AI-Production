@@ -5,10 +5,12 @@
  *   2. Bill Shock Alert  — predictive narrative: "You'll be ₹X short"
  *   3. Privacy Scorecard — "0 KB Sent to Cloud" badge
  *   4. Truth-Serum       — anomaly coaching questions, not flat warnings
+ *   5. AI Insights       — smart suggestions panel with spending alerts  ← NEW
+ *   6. Weekly Spending   — daily bar chart for last 7 days               ← NEW
  */
 
 import { useState, useEffect, useRef } from 'react';
-import { getFinancialSnapshot, getDailyTip, type GroundTruth } from '../services/ai';
+import { getFinancialSnapshot, getDailyTip, get7DaySpending, type GroundTruth, type DailySpending } from '../services/ai';
 import { db } from '../services/db';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -159,7 +161,6 @@ function PrivacyBadge() {
       fontSize: '12px', fontWeight: 700, color: '#00e5a0',
       letterSpacing: '0.02em',
     }}>
-      {/* Shield icon */}
       <svg width="13" height="14" viewBox="0 0 13 14" fill="none">
         <path d="M6.5 1L1 3.5V7c0 3.1 2.3 5.5 5.5 6.5C9.7 12.5 12 10.1 12 7V3.5L6.5 1z"
           fill="rgba(0,229,160,0.2)" stroke="#00e5a0" strokeWidth="1.2"/>
@@ -234,6 +235,363 @@ function TruthSerumCard({ messages }: { messages: string[] }) {
   );
 }
 
+// ── NEW: AI Insights Panel ────────────────────────────────────────────────────
+type InsightSeverity = 'warning' | 'danger' | 'tip';
+
+interface Insight {
+  id: string;
+  severity: InsightSeverity;
+  title: string;
+  body: string;
+}
+
+// Category thresholds — amounts above these trigger a danger alert
+const CAT_DANGER_THRESHOLDS: Record<string, number> = {
+  Entertainment: 5000,
+  Shopping:      8000,
+  Food:          6000,
+  Transport:     3000,
+  Health:        5000,
+  Utilities:     4000,
+  Education:     5000,
+  Other:         5000,
+};
+
+// Percentage of total spend that flags a category as "dominant"
+const CAT_DOMINANCE_PCT = 40; // if one non-savings category is >40% of total spend → warn
+
+function buildInsights(truth: GroundTruth, sevenDay: DailySpending[]): Insight[] {
+  const insights: Insight[] = [];
+
+  // ── 1. Per-category overspend alerts (HIGHEST PRIORITY) ──────────────────
+  // Check every category in the breakdown for absolute threshold breaches
+  const nonSavingsTotal = Object.entries(truth.categoryBreakdown)
+    .filter(([cat]) => cat !== 'Savings')
+    .reduce((s, [, v]) => s + v.total, 0);
+
+  Object.entries(truth.categoryBreakdown)
+    .filter(([cat]) => cat !== 'Savings')
+    .sort((a, b) => b[1].total - a[1].total) // highest spenders first
+    .forEach(([cat, stat]) => {
+      const threshold = CAT_DANGER_THRESHOLDS[cat] ?? 5000;
+      const pctOfTotal = nonSavingsTotal > 0 ? (stat.total / nonSavingsTotal) * 100 : 0;
+
+      // Case A: Absolute threshold breached — RED danger
+      if (stat.total >= threshold) {
+        insights.push({
+          id: `cat-overspend-${cat.toLowerCase()}`,
+          severity: 'danger',
+          title: `🚨 High ${cat} spending — ₹${stat.total.toLocaleString('en-IN')}`,
+          body: `You've spent ₹${stat.total.toLocaleString('en-IN')} on ${cat} this period, which is above the ₹${threshold.toLocaleString('en-IN')} alert threshold. That's ${pctOfTotal.toFixed(0)}% of your total expenses.`,
+        });
+      }
+      // Case B: Category dominates total spend even below threshold — YELLOW warning
+      else if (pctOfTotal >= CAT_DOMINANCE_PCT && stat.total > 1000) {
+        insights.push({
+          id: `cat-dominant-${cat.toLowerCase()}`,
+          severity: 'warning',
+          title: `${cat} is ${pctOfTotal.toFixed(0)}% of your spending`,
+          body: `₹${stat.total.toLocaleString('en-IN')} out of ₹${nonSavingsTotal.toLocaleString('en-IN')} total went to ${cat}. Consider if this aligns with your budget goals.`,
+        });
+      }
+    });
+
+  // ── 2. Single large transaction spike ────────────────────────────────────
+  // If total spent is very high but transaction count is low → one big purchase
+  const txCount = Object.values(truth.categoryBreakdown).reduce((s, c) => s + c.transactionCount, 0);
+  if (txCount <= 3 && truth.totalSpent > 10000) {
+    insights.push({
+      id: 'large-single-tx',
+      severity: 'warning',
+      title: `Large purchase detected`,
+      body: `You made ${txCount} transaction${txCount !== 1 ? 's' : ''} totalling ₹${truth.totalSpent.toLocaleString('en-IN')}. Large one-off purchases can skew your monthly budget — make sure this was planned.`,
+    });
+  }
+
+  // ── 3. Weekend spending spike ─────────────────────────────────────────────
+  if (truth.weekendVsWeekday?.isHigh) {
+    const { weekendTotal } = truth.weekendVsWeekday;
+    const pct = truth.weekendVsWeekday.weekdayTotal > 0
+      ? Math.round(((weekendTotal - truth.weekendVsWeekday.weekdayTotal) / truth.weekendVsWeekday.weekdayTotal) * 100)
+      : 0;
+    insights.push({
+      id: 'weekend-spike',
+      severity: 'warning',
+      title: 'You spent more than usual this weekend',
+      body: `Weekend spending was ₹${weekendTotal.toLocaleString('en-IN')}, which is ${pct}% higher than your typical weekend average.`,
+    });
+  }
+
+  // ── 4. Week-over-week food increase ──────────────────────────────────────
+  const foodStat = truth.categoryBreakdown['Food'];
+  if (foodStat && foodStat.total > 0) {
+    const thisWeekFood = sevenDay.slice(-7).reduce((s, d) => s + (d.categories?.['Food'] ?? 0), 0);
+    const prevWeekFood = sevenDay.slice(0, 7).reduce((s, d) => s + (d.categories?.['Food'] ?? 0), 0);
+    if (prevWeekFood > 0 && thisWeekFood > prevWeekFood) {
+      const pct = Math.round(((thisWeekFood - prevWeekFood) / prevWeekFood) * 100);
+      // Only show this if we haven't already flagged Food via threshold above
+      const alreadyFlagged = insights.some(i => i.id === 'cat-overspend-food' || i.id === 'cat-dominant-food');
+      if (!alreadyFlagged) {
+        insights.push({
+          id: 'food-increase',
+          severity: 'danger',
+          title: `Food expenses increased ${pct}% this week`,
+          body: `Your food spending rose to ₹${thisWeekFood.toLocaleString('en-IN')} from ₹${prevWeekFood.toLocaleString('en-IN')} last week.`,
+        });
+      }
+    }
+  }
+
+  // ── 5. Subscription tip ───────────────────────────────────────────────────
+  if (truth.billShocks.length >= 3) {
+    const totalSubs = truth.billShocks.reduce((s, b) => s + b.amount, 0);
+    insights.push({
+      id: 'subscription-tip',
+      severity: 'tip',
+      title: 'You can reduce monthly spending by adjusting subscriptions',
+      body: `You have ${truth.billShocks.length} upcoming bills totalling ₹${totalSubs.toLocaleString('en-IN')}. Review which ones you actively use.`,
+    });
+  }
+
+  // ── 6. High daily average ─────────────────────────────────────────────────
+  if (truth.dailyAverage > 1000) {
+    insights.push({
+      id: 'high-daily-avg',
+      severity: 'warning',
+      title: 'Daily spending above ₹1,000',
+      body: `Your average daily spend this month is ₹${truth.dailyAverage.toFixed(0)}. At this pace you'll spend ₹${Math.round(truth.dailyAverage * 30).toLocaleString('en-IN')} this month.`,
+    });
+  }
+
+  // Danger insights always float to the top
+  insights.sort((a, b) => {
+    const order = { danger: 0, warning: 1, tip: 2 };
+    return order[a.severity] - order[b.severity];
+  });
+
+  return insights;
+}
+
+const INSIGHT_STYLES: Record<InsightSeverity, { bg: string; border: string; iconBg: string; iconColor: string; icon: string; labelColor: string }> = {
+  warning: {
+    bg: 'linear-gradient(135deg, rgba(245,158,11,0.07), rgba(245,158,11,0.03))',
+    border: '1px solid rgba(245,158,11,0.25)',
+    iconBg: 'rgba(245,158,11,0.12)',
+    iconColor: '#F59E0B',
+    icon: '⚠',
+    labelColor: '#F59E0B',
+  },
+  danger: {
+    bg: 'linear-gradient(135deg, rgba(239,68,68,0.07), rgba(239,68,68,0.03))',
+    border: '1px solid rgba(239,68,68,0.25)',
+    iconBg: 'rgba(239,68,68,0.12)',
+    iconColor: '#EF4444',
+    icon: '!',
+    labelColor: '#EF4444',
+  },
+  tip: {
+    bg: 'linear-gradient(135deg, rgba(6,182,212,0.07), rgba(6,182,212,0.03))',
+    border: '1px solid rgba(6,182,212,0.25)',
+    iconBg: 'rgba(6,182,212,0.12)',
+    iconColor: '#06B6D4',
+    icon: '💡',
+    labelColor: '#06B6D4',
+  },
+};
+
+function AIInsightsPanel({ insights }: { insights: Insight[] }) {
+  const [dismissed, setDismissed] = useState<string[]>([]);
+  const visible = insights.filter(i => !dismissed.includes(i.id));
+  if (visible.length === 0) return null;
+
+  return (
+    <div className="card">
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+        <div>
+          <div style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text)' }}>✨ AI Insights</div>
+          <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '2px' }}>Smart suggestions</div>
+        </div>
+        <div style={{
+          fontSize: '10px', fontWeight: 700, color: 'var(--muted)',
+          background: 'rgba(0,0,0,0.06)', borderRadius: '20px',
+          padding: '3px 9px', letterSpacing: '0.05em',
+        }}>
+          {visible.length} insight{visible.length !== 1 ? 's' : ''}
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+        {visible.map(insight => {
+          const s = INSIGHT_STYLES[insight.severity];
+          return (
+            <div key={insight.id} style={{
+              padding: '12px 14px',
+              background: s.bg,
+              border: s.border,
+              borderRadius: '12px',
+              display: 'flex', gap: '12px', alignItems: 'flex-start',
+            }}>
+              {/* Icon circle */}
+              <div style={{
+                width: '28px', height: '28px', borderRadius: '50%',
+                background: s.iconBg,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                flexShrink: 0, marginTop: '1px',
+                fontSize: insight.severity === 'tip' ? '14px' : '13px',
+                fontWeight: 800, color: s.iconColor,
+              }}>
+                {insight.icon}
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text)', marginBottom: '4px', lineHeight: '1.4' }}>
+                  {insight.title}
+                </div>
+                <div style={{ fontSize: '12px', color: 'var(--muted)', lineHeight: '1.6' }}>
+                  {insight.body}
+                </div>
+              </div>
+              <button
+                onClick={() => setDismissed(d => [...d, insight.id])}
+                style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: '18px', lineHeight: 1, flexShrink: 0, padding: '0 2px', opacity: 0.6 }}
+              >×</button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── NEW: Weekly Spending Bar Chart ────────────────────────────────────────────
+function WeeklySpendingChart({ data }: { data: DailySpending[] }) {
+  if (!data || data.length === 0) return null;
+
+  // Take last 7 days
+  const days = data.slice(-7);
+  const maxAmount = Math.max(...days.map(d => d.amount), 1);
+
+  // Round up to a clean grid max
+  const gridMax = Math.ceil(maxAmount / 500) * 500;
+  const gridLines = [0, gridMax * 0.25, gridMax * 0.5, gridMax * 0.75, gridMax];
+
+  const dayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+  // Map day index to label — use existing label if provided, else derive
+  const getLabel = (d: DailySpending, i: number) => {
+    if (d.label) return d.label;
+    // Fallback: use position in week
+    return dayLabels[i % 7];
+  };
+
+  const BAR_COLOR = '#14B8A6'; // teal matching dashboard theme
+  const BAR_HOVER_COLOR = '#0D9488';
+
+  return (
+    <div className="card">
+      <div style={{ marginBottom: '16px' }}>
+        <div style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text)' }}>📅 Weekly Spending</div>
+        <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '2px' }}>Daily expenses breakdown for last 7 days</div>
+      </div>
+
+      <div style={{ display: 'flex', gap: '0', position: 'relative' }}>
+        {/* Y-axis labels */}
+        <div style={{
+          display: 'flex', flexDirection: 'column-reverse', justifyContent: 'space-between',
+          height: '160px', paddingBottom: '0', marginRight: '8px', flexShrink: 0,
+        }}>
+          {gridLines.map((val, i) => (
+            <div key={i} style={{ fontSize: '10px', color: 'var(--muted)', lineHeight: 1, textAlign: 'right', whiteSpace: 'nowrap' }}>
+              {val === 0 ? '₹0' : `₹${(val / 1000).toFixed(val >= 1000 ? 0 : 1)}${val >= 1000 ? 'k' : ''}`}
+            </div>
+          ))}
+        </div>
+
+        {/* Chart area */}
+        <div style={{ flex: 1, position: 'relative' }}>
+          {/* Grid lines */}
+          <div style={{ position: 'absolute', inset: 0, height: '160px', pointerEvents: 'none' }}>
+            {gridLines.map((_, i) => (
+              <div key={i} style={{
+                position: 'absolute',
+                left: 0, right: 0,
+                bottom: `${(i / (gridLines.length - 1)) * 100}%`,
+                height: '1px',
+                background: i === 0 ? 'rgba(0,0,0,0.12)' : 'rgba(0,0,0,0.05)',
+              }} />
+            ))}
+          </div>
+
+          {/* Bars */}
+          <div style={{
+            display: 'flex', alignItems: 'flex-end', gap: '6px',
+            height: '160px', position: 'relative', zIndex: 1,
+          }}>
+            {days.map((d, i) => {
+              const heightPct = (d.amount / gridMax) * 100;
+              const isToday = i === days.length - 1;
+              return (
+                <div
+                  key={i}
+                  style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', height: '100%', justifyContent: 'flex-end' }}
+                  title={`₹${d.amount.toLocaleString('en-IN')}`}
+                >
+                  <div
+                    style={{
+                      width: '100%',
+                      height: `${Math.max(heightPct, 2)}%`,
+                      background: isToday
+                        ? `linear-gradient(180deg, ${BAR_HOVER_COLOR}, ${BAR_COLOR})`
+                        : BAR_COLOR,
+                      borderRadius: '5px 5px 3px 3px',
+                      opacity: isToday ? 1 : 0.82,
+                      transition: 'height 0.5s cubic-bezier(0.4,0,0.2,1)',
+                      cursor: 'default',
+                      boxShadow: isToday ? `0 -2px 8px rgba(20,184,166,0.35)` : 'none',
+                    }}
+                  />
+                </div>
+              );
+            })}
+          </div>
+
+          {/* X-axis labels */}
+          <div style={{ display: 'flex', gap: '6px', marginTop: '8px' }}>
+            {days.map((d, i) => (
+              <div key={i} style={{
+                flex: 1, textAlign: 'center',
+                fontSize: '10px', fontWeight: i === days.length - 1 ? 700 : 500,
+                color: i === days.length - 1 ? '#14B8A6' : 'var(--muted)',
+              }}>
+                {getLabel(d, i)}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Summary row */}
+      <div style={{
+        display: 'flex', gap: '16px', marginTop: '16px',
+        paddingTop: '12px', borderTop: '1px solid rgba(0,0,0,0.06)',
+        fontSize: '12px',
+      }}>
+        <div>
+          <span style={{ color: 'var(--muted)' }}>Total: </span>
+          <span style={{ fontWeight: 700 }}>₹{days.reduce((s, d) => s + d.amount, 0).toLocaleString('en-IN')}</span>
+        </div>
+        <div>
+          <span style={{ color: 'var(--muted)' }}>Peak: </span>
+          <span style={{ fontWeight: 700 }}>₹{Math.max(...days.map(d => d.amount)).toLocaleString('en-IN')}</span>
+        </div>
+        <div>
+          <span style={{ color: 'var(--muted)' }}>Avg/day: </span>
+          <span style={{ fontWeight: 700 }}>₹{Math.round(days.reduce((s, d) => s + d.amount, 0) / days.length).toLocaleString('en-IN')}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main Dashboard ────────────────────────────────────────────────────────────
 
 export default function DashboardTab() {
@@ -241,15 +599,18 @@ export default function DashboardTab() {
   const [tip, setTip]           = useState<string>('');
   const [loading, setLoading]   = useState(true);
   const [balance, setBalance]   = useState<number | null>(null);
+  const [sevenDaySpending, setSevenDaySpending] = useState<DailySpending[]>([]);
 
   const load = async () => {
     try {
-      const [snapshot, dailyTip] = await Promise.all([
+      const [snapshot, dailyTip, sevenDayData] = await Promise.all([
         getFinancialSnapshot(),
         getDailyTip(),
+        get7DaySpending(),
       ]);
       setTruth(snapshot);
       setTip(dailyTip);
+      setSevenDaySpending(sevenDayData);
       setBalance(db.getBalance());
     } catch (e) {
       console.error('Dashboard load error:', e);
@@ -266,7 +627,6 @@ export default function DashboardTab() {
 
   const handleBalanceChange = async (newBal: number) => {
     setBalance(newBal);
-    // Reload snapshot so bill shocks recalculate with new balance
     try {
       const snapshot = await getFinancialSnapshot();
       setTruth(snapshot);
@@ -297,6 +657,9 @@ export default function DashboardTab() {
     : 'First month of tracking';
   const topCategories = Object.entries(truth.categoryBreakdown)
     .sort((a, b) => b[1].total - a[1].total).slice(0, 5);
+
+  // Build AI insights from live data
+  const aiInsights = buildInsights(truth, sevenDaySpending);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -332,11 +695,7 @@ export default function DashboardTab() {
           sub={`Daily avg ₹${truth.dailyAverage.toFixed(0)}`}
           icon="🧾"
         />
-
-        {/* ── Balance Card (replaces Daily Average) ── */}
         <BalanceCard initialBalance={balance} onBalanceChange={handleBalanceChange} />
-
-        {/* ── Total Savings ── */}
         <StatCard
           label="Total Savings"
           value={`₹${truth.totalSavings.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`}
@@ -392,17 +751,27 @@ export default function DashboardTab() {
         </div>
       </div>
 
-      {/* ── Daily Insight ─────────────────────────────────────────────────── */}
+      {/* ── 7-Day Insight ─────────────────────────────────────────────────── */}
       {tip && (
         <div className="card" style={{
           background: 'linear-gradient(135deg, rgba(16,185,129,0.06), rgba(6,182,212,0.04))',
           border: '1px solid rgba(16,185,129,0.15)',
         }}>
           <div style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.07em', color: '#10B981', textTransform: 'uppercase', marginBottom: '8px' }}>
-            💡 Today's Insight
+            💡 Past 7 Days Insight
           </div>
           <div style={{ fontSize: '13px', color: 'var(--text)', lineHeight: '1.6' }}>{tip}</div>
         </div>
+      )}
+
+      {/* ── NEW: Weekly Spending Bar Chart ────────────────────────────────── */}
+      {sevenDaySpending.length > 0 && (
+        <WeeklySpendingChart data={sevenDaySpending} />
+      )}
+
+      {/* ── NEW: AI Insights Panel ────────────────────────────────────────── */}
+      {aiInsights.length > 0 && (
+        <AIInsightsPanel insights={aiInsights} />
       )}
 
       {/* ── Spending Breakdown ────────────────────────────────────────────── */}
@@ -435,7 +804,7 @@ export default function DashboardTab() {
         </div>
       )}
 
-      {/* ── Upcoming Bills (informational, no false shortfalls) ───────────── */}
+      {/* ── Upcoming Bills ────────────────────────────────────────────────── */}
       {truth.billShocks.length > 0 && (
         <div className="card">
           <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '12px' }}>📋 Upcoming Bills</div>
@@ -485,7 +854,7 @@ export default function DashboardTab() {
               return '✅';
             };
             const statusColor = getStatusColor();
-            
+
             return (
               <div key={budget.category} style={{ marginBottom: '16px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
@@ -498,10 +867,10 @@ export default function DashboardTab() {
                   </div>
                 </div>
                 <div style={{ height: '8px', background: 'rgba(0,0,0,0.06)', borderRadius: '4px', overflow: 'hidden' }}>
-                  <div style={{ 
-                    height: '100%', 
-                    width: `${Math.min(budget.percentUsed, 100)}%`, 
-                    background: statusColor, 
+                  <div style={{
+                    height: '100%',
+                    width: `${Math.min(budget.percentUsed, 100)}%`,
+                    background: statusColor,
                     borderRadius: '4px',
                   }} />
                 </div>
@@ -519,7 +888,7 @@ export default function DashboardTab() {
 
       {/* Weekend vs Weekday Insight */}
       {truth.weekendVsWeekday && truth.weekendVsWeekday.message && (
-        <div className="card" style={{ 
+        <div className="card" style={{
           border: truth.weekendVsWeekday.isHigh ? '1px solid rgba(239,68,68,0.25)' : '1px solid rgba(16,185,129,0.25)',
           background: truth.weekendVsWeekday.isHigh ? 'rgba(239,68,68,0.04)' : 'rgba(16,185,129,0.04)',
         }}>

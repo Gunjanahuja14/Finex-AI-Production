@@ -783,3 +783,44 @@ export async function getDailyTip(): Promise<string> {
   }
   return `💰 Savings this month: ₹${truth.totalSavings.toFixed(0)} (${truth.savingsRate.toFixed(1)}%). Keep building!`;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7-DAY SPENDING DATA
+// Returns daily spending for the past 7 days
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface DailySpending {
+  date: string;
+  dayLabel: string;
+  amount: number;
+}
+
+export async function get7DaySpending(): Promise<DailySpending[]> {
+  const now = new Date();
+  const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const result: DailySpending[] = [];
+
+  for (let i = 6; i >= 0; i--) {
+    const date = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
+    const dateStr = date.toISOString().split('T')[0];
+    const dayLabel = dayNames[date.getDay()];
+    
+    result.push({
+      date: dateStr,
+      dayLabel,
+      amount: 0,
+    });
+  }
+
+  const allTx = await db.getAll();
+  
+  for (const t of allTx) {
+    const txDate = new Date(t.date).toISOString().split('T')[0];
+    const dayData = result.find(d => d.date === txDate);
+    if (dayData && t.category !== 'Savings') {
+      dayData.amount += t.amount;
+    }
+  }
+
+  return result;
+}
